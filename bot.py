@@ -21,8 +21,11 @@ def calculate_qty(symbol):
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("availableBalance", 0))
         trade_usdt = available_usdt * 0.5
-        price_info = session.get_ticker(symbol=symbol)["result"]
+
+        tickers = session.get_market_tickers(category="linear")["result"]["list"]
+        price_info = next(item for item in tickers if item["symbol"] == symbol)
         last_price = float(price_info["lastPrice"])
+
         qty = round(trade_usdt / last_price, 3)
         return qty
     except Exception as e:
