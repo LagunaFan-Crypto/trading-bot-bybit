@@ -25,7 +25,7 @@ def calculate_qty(symbol):
 
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
-        available_usdt = float(usdt.get("availableBalance", 0))
+        available_usdt = float(usdt.get("walletBalance", 0))
         trade_usdt = available_usdt * 0.5
 
         tickers_data = session.get_tickers(category="linear")
