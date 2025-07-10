@@ -17,7 +17,6 @@ def send_to_discord(message):
 
 def calculate_qty(symbol):
     try:
-        # Debug: wysyłka na Discord informacji o rozpoczęciu
         send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
 
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
@@ -31,17 +30,23 @@ def calculate_qty(symbol):
         tickers_data = session.get_tickers(category="linear")
         send_to_discord(f"📈 Odpowiedź z get_tickers:\n{tickers_data}")
 
-        tickers = tickers_data["result"]["list"]
-        price_info = next(item for item in tickers if item["symbol"] == symbol)
-        last_price = float(price_info["lastPrice"])
+        # Spróbuj znaleźć symbol
+        price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
 
+        if not price_info:
+            send_to_discord(f"⚠️ Symbol {symbol} nie został znaleziony w tickers.")
+            return None
+
+        last_price = float(price_info["lastPrice"])
         qty = round(trade_usdt / last_price, 3)
+
         send_to_discord(f"✅ Obliczona ilość: {qty} przy cenie {last_price}")
         return qty
 
     except Exception as e:
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
+
 
 
 @app.route('/webhook', methods=['POST'])
