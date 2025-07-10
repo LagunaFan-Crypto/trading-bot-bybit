@@ -19,7 +19,7 @@ def calculate_qty(symbol):
     try:
         balance_info = session.get_wallet_balance(accountType="UNIFIED")["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
-        available_usdt = float(usdt["availableToTrade"])
+        available_usdt = float(usdt.get("availableBalance", 0))
         trade_usdt = available_usdt * 0.5
         price_info = session.get_ticker(symbol=symbol)["result"]
         last_price = float(price_info["lastPrice"])
