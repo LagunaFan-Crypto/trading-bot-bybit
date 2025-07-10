@@ -38,8 +38,8 @@ def calculate_qty(symbol):
             return None
 
         last_price = float(price_info["lastPrice"])
-        qty = trade_usdt / last_price
-        qty = round(qty, 4)  # dokładność 4 miejsc
+               qty = trade_usdt / last_price
+        qty = round(qty, 2)  # dla SOLUSDT: krok to 0.01
 
         if qty <= 0:
             send_to_discord(f"⚠️ Obliczona ilość to 0. Zbyt mały depozyt przy cenie {last_price}.")
