@@ -17,23 +17,32 @@ def send_to_discord(message):
 
 def calculate_qty(symbol):
     try:
-        # Pobierz balans USDT
-        balance_info = session.get_wallet_balance(accountType="UNIFIED")["result"]["list"][0]["coin"]
+        # Debug: wysyłka na Discord informacji o rozpoczęciu
+        send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
+
+        balance_data = session.get_wallet_balance(accountType="UNIFIED")
+        send_to_discord(f"💰 Odpowiedź z get_wallet_balance:\n{balance_data}")
+
+        balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("availableBalance", 0))
         trade_usdt = available_usdt * 0.5
 
-        # Pobierz aktualną cenę instrumentu
-        tickers = session.get_tickers(category="linear")["result"]["list"]
+        tickers_data = session.get_tickers(category="linear")
+        send_to_discord(f"📈 Odpowiedź z get_tickers:\n{tickers_data}")
+
+        tickers = tickers_data["result"]["list"]
         price_info = next(item for item in tickers if item["symbol"] == symbol)
         last_price = float(price_info["lastPrice"])
 
-        # Oblicz ilość
         qty = round(trade_usdt / last_price, 3)
+        send_to_discord(f"✅ Obliczona ilość: {qty} przy cenie {last_price}")
         return qty
+
     except Exception as e:
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
