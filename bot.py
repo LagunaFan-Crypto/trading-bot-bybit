@@ -28,9 +28,9 @@ def calculate_qty(symbol):
         trade_usdt = available_usdt * 0.5
 
         tickers_data = session.get_tickers(category="linear")
-        send_to_discord(f"📈 Odpowiedź z get_tickers:\n{tickers_data}")
+        all_symbols = [item["symbol"] for item in tickers_data["result"]["list"]]
+        send_to_discord(f"📜 Lista symboli:\n{all_symbols}")
 
-        # Spróbuj znaleźć symbol
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
 
         if not price_info:
@@ -38,7 +38,12 @@ def calculate_qty(symbol):
             return None
 
         last_price = float(price_info["lastPrice"])
-        qty = round(trade_usdt / last_price, 3)
+        qty = trade_usdt / last_price
+        qty = round(qty, 4)  # dokładność 4 miejsc
+
+        if qty <= 0:
+            send_to_discord(f"⚠️ Obliczona ilość to 0. Zbyt mały depozyt przy cenie {last_price}.")
+            return None
 
         send_to_discord(f"✅ Obliczona ilość: {qty} przy cenie {last_price}")
         return qty
@@ -46,7 +51,6 @@ def calculate_qty(symbol):
     except Exception as e:
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
-
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
