@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request
 from pybit.unified_trading import HTTP
 import requests
