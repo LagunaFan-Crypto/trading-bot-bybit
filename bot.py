@@ -75,9 +75,9 @@ def webhook():
     position_size, position_side = get_current_position(SYMBOL)
 
     try:
-        # 🔒 Zamykanie przeciwnej pozycji, jeśli istnieje
+        # 🔒 Zamknięcie tylko przeciwnej pozycji
         if position_size > 0:
-            if (action == "buy" and position_side == "Sell") or (action == "sell" and position_side == "Buy"):
+            if (position_side == "Sell" and action == "buy") or (position_side == "Buy" and action == "sell"):
                 session.place_order(
                     category="linear",
                     symbol=SYMBOL,
@@ -89,24 +89,19 @@ def webhook():
                 )
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
 
-        # 🟢 Otwórz nową pozycję w kierunku sygnału
-        side = "Buy" if action == "buy" else "Sell"
+        # 🟢 Otwórz nową pozycję
+        new_side = "Buy" if action == "buy" else "Sell"
         session.place_order(
             category="linear",
             symbol=SYMBOL,
-            side=side,
+            side=new_side,
             orderType="Market",
             qty=qty,
             timeInForce="GoodTillCancel"
         )
-        send_to_discord(f"✅ {side.upper()} zlecenie złożone: {qty} {SYMBOL}")
+        send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
         return "OK", 200
 
     except Exception as e:
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
         return "Order error", 500
-
-# 🔧 Uruchomienie aplikacji Flask
-if __name__ == "__main__":
-    import os
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
