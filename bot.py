@@ -66,11 +66,6 @@ def index():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-    # ... reszta kodu ...
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
     print("🛎️ Webhook odebrany!")  # debug
     data = request.get_json()
     action = data.get("action", "").lower()
