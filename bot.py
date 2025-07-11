@@ -60,8 +60,13 @@ def calculate_qty(symbol):
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
 
+@app.route("/", methods=["GET"])
+def home():
+    return "✅ Bot działa!", 200
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    print("🛎️ Webhook odebrany!")  # debug
     data = request.get_json()
     action = data.get("action", "").lower()
 
@@ -109,4 +114,3 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
