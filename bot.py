@@ -105,3 +105,7 @@ def webhook():
     except Exception as e:
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
         return "Order error", 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
