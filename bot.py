@@ -61,8 +61,13 @@ def calculate_qty(symbol):
         return None
 
 @app.route("/", methods=["GET"])
-def home():
+def index():
     return "✅ Bot działa!", 200
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json()
+    # ... reszta kodu ...
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
