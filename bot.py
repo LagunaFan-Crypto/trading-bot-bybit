@@ -19,18 +19,17 @@ def calculate_qty(symbol):
     try:
         send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
 
+        # 🧮 Pobranie dostępnego salda USDT
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
         send_to_discord(f"💰 Odpowiedź z get_wallet_balance:\n{balance_data}")
 
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.5
+        trade_usdt = available_usdt * 0.5  # 🟩 50% konta
 
+        # 📈 Pobranie ostatniej ceny WIFUSDT
         tickers_data = session.get_tickers(category="linear")
-        all_symbols = [item["symbol"] for item in tickers_data["result"]["list"]]
-        send_to_discord(f"📜 Lista symboli:\n{all_symbols}")
-
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
 
         if not price_info:
@@ -38,19 +37,23 @@ def calculate_qty(symbol):
             return None
 
         last_price = float(price_info["lastPrice"])
-        qty = trade_usdt / last_price
-        qty = round(qty, 4)  # dokładność 4 miejsc
 
-        if qty <= 0:
-            send_to_discord(f"⚠️ Obliczona ilość to 0. Zbyt mały depozyt przy cenie {last_price}.")
+        # 🔢 Obliczenie liczby kontraktów (całkowita liczba WIF)
+        qty = int(trade_usdt / last_price)
+
+        if qty < 1:
+            send_to_discord(
+                f"⚠️ Obliczona ilość kontraktów to {qty}. Za mało USDT do zakupu choćby 1 WIF przy cenie {last_price} USDT."
+            )
             return None
 
-        send_to_discord(f"✅ Obliczona ilość: {qty} przy cenie {last_price}")
+        send_to_discord(f"✅ Obliczona ilość: {qty} WIF przy cenie {last_price} USDT")
         return qty
 
     except Exception as e:
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
+
 
 
         send_to_discord(f"✅ Obliczona ilość: {qty} przy cenie {last_price}")
