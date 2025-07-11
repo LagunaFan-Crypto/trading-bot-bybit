@@ -19,16 +19,15 @@ def calculate_qty(symbol):
     try:
         send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
 
-        # 🧮 Pobranie dostępnego salda USDT
+        # Pobranie salda USDT
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
-        send_to_discord(f"💰 Odpowiedź z get_wallet_balance:\n{balance_data}")
 
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.5  # 🟩 50% konta
+        trade_usdt = available_usdt * 0.5
 
-        # 📈 Pobranie ostatniej ceny WIFUSDT
+        # Pobranie ceny instrumentu
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
 
@@ -37,8 +36,6 @@ def calculate_qty(symbol):
             return None
 
         last_price = float(price_info["lastPrice"])
-
-        # 🔢 Obliczenie liczby kontraktów (całkowita liczba WIF)
         qty = int(trade_usdt / last_price)
 
         if qty < 1:
@@ -46,6 +43,14 @@ def calculate_qty(symbol):
                 f"⚠️ Obliczona ilość kontraktów to {qty}. Za mało USDT do zakupu choćby 1 WIF przy cenie {last_price} USDT."
             )
             return None
+
+        send_to_discord(f"✅ Obliczona ilość: {qty} WIF przy cenie {last_price} USDT")
+        return qty
+
+    except Exception as e:
+        send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
+        return None
+
 
         send_to_discord(f"✅ Obliczona ilość: {qty} WIF przy cenie {last_price} USDT")
         return qty
