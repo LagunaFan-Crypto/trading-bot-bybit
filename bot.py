@@ -5,11 +5,14 @@ from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 app = Flask(__name__)
 
-# Ustawienie endpointa
-base_url = "https://api-testnet.bybit.com" if TESTNET else "https://api.bybit.com"
-session = HTTP(api_key=API_KEY, api_secret=API_SECRET, base_url=base_url)
+# 🔧 Inicjalizacja sesji bez błędnego argumentu "base_url"
+session = HTTP(
+    api_key=API_KEY,
+    api_secret=API_SECRET,
+    testnet=TESTNET
+)
 
-# Funkcja wysyłająca wiadomości na Discorda
+# 🔔 Wysyłanie wiadomości na Discorda
 def send_to_discord(message):
     try:
         payload = {"content": message}
@@ -17,17 +20,16 @@ def send_to_discord(message):
     except Exception as e:
         print(f"❌ Błąd wysyłania do Discord: {e}")
 
-# Funkcja obliczająca ilość kontraktów (dla WIFUSDT)
+# 🔢 Oblicz ilość kontraktów do otwarcia (50% dostępnego salda USDT)
 def calculate_qty(symbol):
     try:
         send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
 
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
-
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.5  # 50% salda
+        trade_usdt = available_usdt * 0.5
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -40,17 +42,17 @@ def calculate_qty(symbol):
         qty = int(trade_usdt / last_price)
 
         if qty < 1:
-            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Za mała kwota do zakupu choćby 1 kontraktu.")
+            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Za mało USDT do zakupu choćby 1 kontraktu.")
             return None
 
-        send_to_discord(f"✅ Obliczona ilość: {qty} WIF przy cenie {last_price} USDT")
+        send_to_discord(f"✅ Obliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
         return qty
 
     except Exception as e:
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
 
-# Główna funkcja webhooka
+# 🔄 Webhook — reaguje na sygnały "buy" lub "sell"
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
@@ -65,7 +67,7 @@ def webhook():
         return "Qty error", 400
 
     try:
-        # 1. Zamknij przeciwną pozycję
+        # 🔒 Najpierw zamknij przeciwną pozycję
         opposite_side = "Sell" if action == "buy" else "Buy"
         session.place_order(
             category="linear",
@@ -78,7 +80,7 @@ def webhook():
         )
         send_to_discord(f"🔒 Zamknięcie pozycji {opposite_side.upper()}")
 
-        # 2. Otwórz nową pozycję
+        # ✅ Następnie otwórz nową pozycję w odpowiednim kierunku
         side = "Buy" if action == "buy" else "Sell"
         session.place_order(
             category="linear",
@@ -95,5 +97,6 @@ def webhook():
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
         return "Order error", 500
 
+# 🔧 Uruchomienie aplikacji Flask
 if __name__ == "__main__":
     app.run(debug=False, port=5000)
