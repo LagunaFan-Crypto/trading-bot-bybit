@@ -5,14 +5,12 @@ from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 app = Flask(__name__)
 
-# 🔧 Inicjalizacja sesji bez błędnego argumentu "base_url"
 session = HTTP(
     api_key=API_KEY,
     api_secret=API_SECRET,
     testnet=TESTNET
 )
 
-# 🔔 Wysyłanie wiadomości na Discorda
 def send_to_discord(message):
     try:
         payload = {"content": message}
@@ -20,7 +18,17 @@ def send_to_discord(message):
     except Exception as e:
         print(f"❌ Błąd wysyłania do Discord: {e}")
 
-# 🔢 Oblicz ilość kontraktów do otwarcia (50% dostępnego salda USDT)
+def get_current_position(symbol):
+    try:
+        result = session.get_positions(category="linear", symbol=symbol)
+        position = result["result"]["list"][0]
+        size = float(position["size"])
+        side = position["side"]
+        return size, side
+    except Exception as e:
+        send_to_discord(f"⚠️ Błąd pobierania pozycji: {e}")
+        return 0.0, "None"
+
 def calculate_qty(symbol):
     try:
         send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
@@ -35,24 +43,22 @@ def calculate_qty(symbol):
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
 
         if not price_info:
-            send_to_discord(f"⚠️ Symbol {symbol} nie został znaleziony w tickers.")
+            send_to_discord(f"⚠️ Symbol {symbol} nie został znaleziony.")
             return None
 
         last_price = float(price_info["lastPrice"])
         qty = int(trade_usdt / last_price)
 
         if qty < 1:
-            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Za mało USDT do zakupu choćby 1 kontraktu.")
+            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Za mało USDT.")
             return None
 
         send_to_discord(f"✅ Obliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
         return qty
-
     except Exception as e:
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
 
-# 🔄 Webhook — reaguje na sygnały "buy" lub "sell"
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
@@ -66,21 +72,24 @@ def webhook():
     if qty is None:
         return "Qty error", 400
 
-    try:
-        # 🔒 Najpierw zamknij przeciwną pozycję
-        opposite_side = "Sell" if action == "buy" else "Buy"
-        session.place_order(
-            category="linear",
-            symbol=SYMBOL,
-            side=opposite_side,
-            orderType="Market",
-            qty=qty,
-            reduceOnly=True,
-            timeInForce="GoodTillCancel"
-        )
-        send_to_discord(f"🔒 Zamknięcie pozycji {opposite_side.upper()}")
+    position_size, position_side = get_current_position(SYMBOL)
 
-        # ✅ Następnie otwórz nową pozycję w odpowiednim kierunku
+    try:
+        # 🔒 Zamykanie przeciwnej pozycji, jeśli istnieje
+        if position_size > 0:
+            if (action == "buy" and position_side == "Sell") or (action == "sell" and position_side == "Buy"):
+                session.place_order(
+                    category="linear",
+                    symbol=SYMBOL,
+                    side=position_side,
+                    orderType="Market",
+                    qty=position_size,
+                    reduceOnly=True,
+                    timeInForce="GoodTillCancel"
+                )
+                send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
+
+        # 🟢 Otwórz nową pozycję w kierunku sygnału
         side = "Buy" if action == "buy" else "Sell"
         session.place_order(
             category="linear",
@@ -101,4 +110,3 @@ def webhook():
 if __name__ == "__main__":
     import os
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
