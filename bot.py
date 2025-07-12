@@ -100,16 +100,21 @@ def webhook():
                 )
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
 
-        # 🟢 Otwórz nową pozycję
-        new_side = "Buy" if action == "buy" else "Sell"
-        session.place_order(
-            category="linear",
-            symbol=SYMBOL,
-            side=new_side,
-            orderType="Market",
-            qty=qty,
-            timeInForce="GoodTillCancel"
-        )
+ # 🟢 Otwórz nową pozycję tylko jeśli nie jest już otwarta
+new_side = "Buy" if action == "buy" else "Sell"
+if position_side != new_side:
+    session.place_order(
+        category="linear",
+        symbol=SYMBOL,
+        side=new_side,
+        orderType="Market",
+        qty=qty,
+        timeInForce="GoodTillCancel"
+    )
+    send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
+else:
+    send_to_discord(f"⚠️ Pozycja {new_side.upper()} już istnieje. Pomijam składanie zlecenia.")
+
         send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
         return "OK", 200
 
