@@ -67,7 +67,6 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        print("🛎️ Webhook odebrany!")
         data = request.get_json()
         action = data.get("action", "").lower()
 
@@ -81,7 +80,7 @@ def webhook():
 
         position_size, position_side = get_current_position(SYMBOL)
 
-        # 🔒 Zawsze zamykaj otwartą pozycję (niezależnie od kierunku)
+        # 🔒 Zamknięcie każdej otwartej pozycji
         if position_size > 0:
             close_side = "Buy" if position_side == "Sell" else "Sell"
             session.place_order(
@@ -106,6 +105,7 @@ def webhook():
             timeInForce="GoodTillCancel"
         )
         send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
+
         return "OK", 200
 
     except Exception as e:
