@@ -79,28 +79,29 @@ def webhook():
         return "Qty error", 400
 
     position_size, position_side = get_current_position(SYMBOL)
-    new_side = "Buy" if action == "buy" else "Sell"
 
     try:
-        # 🔒 Zamknięcie istniejącej przeciwnej pozycji
-        if position_size > 0 and position_side != new_side:
-            session.place_order(
-                category="linear",
-                symbol=SYMBOL,
-                side=position_side,
-                orderType="Market",
-                qty=position_size,
-                reduceOnly=True,
-                timeInForce="GoodTillCancel"
-            )
-            send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
+        # 🛑 Jeżeli taka pozycja już istnieje – pomiń
+        if position_size > 0:
+            if position_side.lower() == action:
+                send_to_discord(f"⚠️ Pozycja {position_side.upper()} już istnieje. Pomijam składanie zlecenia.")
+                return "Same position exists", 400
 
-        # 🛡️ Jeśli pozycja w tym samym kierunku już istnieje — nie otwieraj nowej
-        elif position_size > 0 and position_side == new_side:
-            send_to_discord(f"⚠️ Pozycja {new_side.upper()} już istnieje. Pomijam otwarcie nowej.")
-            return "Same position exists", 200
+            # 🔒 Zamknięcie przeciwnej pozycji
+            if (position_side == "Sell" and action == "buy") or (position_side == "Buy" and action == "sell"):
+                session.place_order(
+                    category="linear",
+                    symbol=SYMBOL,
+                    side=position_side,
+                    orderType="Market",
+                    qty=position_size,
+                    reduceOnly=True,
+                    timeInForce="GoodTillCancel"
+                )
+                send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
 
         # 🟢 Otwórz nową pozycję
+        new_side = "Buy" if action == "buy" else "Sell"
         session.place_order(
             category="linear",
             symbol=SYMBOL,
