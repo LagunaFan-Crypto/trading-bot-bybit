@@ -66,28 +66,23 @@ def index():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    print("🛎️ Webhook odebrany!")  # debug
-    data = request.get_json()
-    action = data.get("action", "").lower()
-
-    if action not in ["buy", "sell"]:
-        send_to_discord("⚠️ Nieprawidłowe polecenie. Użyj 'buy' lub 'sell'.")
-        return "Invalid action", 400
-
-    qty = calculate_qty(SYMBOL)
-    if qty is None:
-        return "Qty error", 400
-
-    position_size, position_side = get_current_position(SYMBOL)
-
     try:
-        # 🛑 Jeżeli taka pozycja już istnieje – pomiń
-        if position_size > 0:
-            if position_side.lower() == action:
-                send_to_discord(f"⚠️ Pozycja {position_side.upper()} już istnieje. Pomijam składanie zlecenia.")
-                return "Same position exists", 400
+        print("🛎️ Webhook odebrany!")  # debug
+        data = request.get_json()
+        action = data.get("action", "").lower()
 
-            # 🔒 Zamknięcie przeciwnej pozycji
+        if action not in ["buy", "sell"]:
+            send_to_discord("⚠️ Nieprawidłowe polecenie. Użyj 'buy' lub 'sell'.")
+            return "Invalid action", 400
+
+        qty = calculate_qty(SYMBOL)
+        if qty is None:
+            return "Qty error", 400
+
+        position_size, position_side = get_current_position(SYMBOL)
+
+        # 🔒 Zamknięcie przeciwnej pozycji
+        if position_size > 0:
             if (position_side == "Sell" and action == "buy") or (position_side == "Buy" and action == "sell"):
                 session.place_order(
                     category="linear",
@@ -100,22 +95,21 @@ def webhook():
                 )
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
 
- # 🟢 Otwórz nową pozycję tylko jeśli nie jest już otwarta
-new_side = "Buy" if action == "buy" else "Sell"
-if position_side != new_side:
-    session.place_order(
-        category="linear",
-        symbol=SYMBOL,
-        side=new_side,
-        orderType="Market",
-        qty=qty,
-        timeInForce="GoodTillCancel"
-    )
-    send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
-else:
-    send_to_discord(f"⚠️ Pozycja {new_side.upper()} już istnieje. Pomijam składanie zlecenia.")
+        # 🟢 Otwórz nową pozycję tylko jeśli nie istnieje
+        new_side = "Buy" if action == "buy" else "Sell"
+        if position_side != new_side:
+            session.place_order(
+                category="linear",
+                symbol=SYMBOL,
+                side=new_side,
+                orderType="Market",
+                qty=qty,
+                timeInForce="GoodTillCancel"
+            )
+            send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
+        else:
+            send_to_discord(f"⚠️ Pozycja {new_side.upper()} już istnieje. Pomijam składanie zlecenia.")
 
-        send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
         return "OK", 200
 
     except Exception as e:
