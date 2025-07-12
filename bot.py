@@ -67,7 +67,7 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        print("🛎️ Webhook odebrany!")  # debug
+        print("🛎️ Webhook odebrany!")
         data = request.get_json()
         action = data.get("action", "").lower()
 
@@ -81,12 +81,13 @@ def webhook():
 
         position_size, position_side = get_current_position(SYMBOL)
 
-        # 🔒 ZAMKNIJ KAŻDĄ OTWARTĄ POZYCJĘ
+        # 🔒 Zawsze zamykaj otwartą pozycję (niezależnie od kierunku)
         if position_size > 0:
+            close_side = "Buy" if position_side == "Sell" else "Sell"
             session.place_order(
                 category="linear",
                 symbol=SYMBOL,
-                side=position_side,
+                side=close_side,
                 orderType="Market",
                 qty=position_size,
                 reduceOnly=True,
@@ -94,7 +95,7 @@ def webhook():
             )
             send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
 
-        # 🟢 Otwórz nową pozycję bez względu na wcześniejszy kierunek
+        # 🟢 Otwórz nową pozycję zgodnie z kierunkiem strategii
         new_side = "Buy" if action == "buy" else "Sell"
         session.place_order(
             category="linear",
@@ -105,13 +106,7 @@ def webhook():
             timeInForce="GoodTillCancel"
         )
         send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
-
         return "OK", 200
-
-    except Exception as e:
-        send_to_discord(f"❌ Błąd składania zlecenia: {e}")
-        return "Order error", 500
-
 
     except Exception as e:
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
