@@ -93,10 +93,9 @@ def webhook():
 
         # 2. Jeśli istnieją otwarte pozycje, zamykamy je
         if position_size > 0:
-            # Zaokrąglamy wartość pozycji do 2 miejsc po przecinku
             position_size = round_to_precision(position_size)
 
-            # Upewniamy się, że rozmiar pozycji jest większy niż minimalna wielkość (np. 0.01)
+            # Sprawdzamy, czy pozycja jest wystarczająco duża, by ją zamknąć
             if position_size < 0.01:
                 send_to_discord("⚠️ Pozycja jest zbyt mała, aby ją zamknąć.")
                 return "Invalid position size", 400
@@ -118,7 +117,7 @@ def webhook():
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
                 return "Order error", 500
         else:
-            send_to_discord(f"⚠️ Brak otwartej pozycji, nie można zamknąć pozycji {position_side.upper()}.")
+            send_to_discord("⚠️ Brak otwartej pozycji, nie można zamknąć pozycji.")
 
         # 3. Sprawdzamy stan konta i obliczamy kwotę potrzebną do złożenia zlecenia
         qty = calculate_qty(SYMBOL)
@@ -126,21 +125,23 @@ def webhook():
             send_to_discord(f"⚠️ Obliczona ilość to {qty}. Zbyt mało środków na zlecenie.")
             return "Qty error", 400
 
-        # Zaokrąglamy ilość do dwóch miejsc po przecinku
-        qty = round_to_precision(qty)
+        qty = round_to_precision(qty)  # Zaokrąglamy ilość do dwóch miejsc po przecinku
 
-        # 4. Składamy zlecenie (Buy/Sell)
-        new_side = "Buy" if action == "buy" else "Sell"
-        new_order = session.place_order(
-            category="linear",
-            symbol=SYMBOL,
-            side=new_side,
-            orderType="Market",
-            qty=qty,
-            timeInForce="GoodTillCancel"
-        )
-        print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
-        send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
+        # 4. Składamy zlecenie (Buy/Sell) tylko, jeśli pozycja została zamknięta lub nie istnieje
+        if position_size == 0:  # Zlecenie tylko, gdy pozycja jest zamknięta
+            new_side = "Buy" if action == "buy" else "Sell"
+            new_order = session.place_order(
+                category="linear",
+                symbol=SYMBOL,
+                side=new_side,
+                orderType="Market",
+                qty=qty,
+                timeInForce="GoodTillCancel"
+            )
+            print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
+            send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
+        else:
+            send_to_discord(f"⚠️ Pozycja nie została jeszcze zamknięta, nie składamy nowego zlecenia.")
 
         return "OK", 200
 
