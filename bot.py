@@ -47,7 +47,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.1  # Używamy 10% dostępnego USDT
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -115,14 +115,14 @@ def webhook():
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
                 
-                # Dodajemy opóźnienie 5 sekund po zamknięciu pozycji
-                time.sleep(5)  # Wstrzymanie na 5 sekund
-                print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
+                # Dodajemy opóźnienie 1 sekundy po zamknięciu pozycji
+                time.sleep(1)  # Wstrzymanie na 1 sekundę
+                print("⏳ Odczekano 1 sekundę przed kolejnym działaniem.")
                 
                 # Sprawdzamy status pozycji po opóźnieniu
                 position_size, _ = get_current_position(SYMBOL)
                 if position_size > 0:
-                    send_to_discord(f"⚠️ Pozycja nadal otwarta po 5 sekundach. Będziemy próbować ponownie.")
+                    send_to_discord(f"⚠️ Pozycja nadal otwarta po 1 sekundzie. Będziemy próbować ponownie.")
                     return "Position still open", 400
                 else:
                     print("Pozycja zamknięta, kontynuujemy.")
