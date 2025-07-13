@@ -79,16 +79,12 @@ def webhook():
             send_to_discord("⚠️ Nieprawidłowe polecenie. Użyj 'buy' lub 'sell'.")
             return "Invalid action", 400
 
-        qty = calculate_qty(SYMBOL)
-        if qty is None:
-            return "Qty error", 400
-
+        # 1. Sprawdzamy, czy istnieją otwarte pozycje
         position_size, position_side = get_current_position(SYMBOL)
 
-        # 🔒 Sprawdzanie, czy pozycja jest otwarta przed zamknięciem
+        # 2. Jeśli istnieją otwarte pozycje, zamykamy je
         if position_size > 0:
             close_side = "Buy" if position_side == "Sell" else "Sell"
-            # Zamykamy pozycję tylko jeśli rozmiar pozycji jest większy niż 0
             try:
                 close_order = session.place_order(
                     category="linear",
@@ -107,7 +103,12 @@ def webhook():
         else:
             send_to_discord(f"⚠️ Brak otwartej pozycji, nie można zamknąć pozycji {position_side.upper()}.")
 
-        # 🟢 Otwórz nową pozycję zgodnie z kierunkiem strategii
+        # 3. Sprawdzamy stan konta i obliczamy kwotę potrzebną do złożenia zlecenia
+        qty = calculate_qty(SYMBOL)
+        if qty is None:
+            return "Qty error", 400
+
+        # 4. Składamy zlecenie (Buy/Sell)
         new_side = "Buy" if action == "buy" else "Sell"
         new_order = session.place_order(
             category="linear",
