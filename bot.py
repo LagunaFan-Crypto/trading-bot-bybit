@@ -119,6 +119,14 @@ def webhook():
                 time.sleep(5)  # Wstrzymanie na 5 sekund
                 print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
                 
+                # Sprawdzamy status pozycji po opóźnieniu
+                position_size, _ = get_current_position(SYMBOL)
+                if position_size > 0:
+                    send_to_discord(f"⚠️ Pozycja nadal otwarta po 5 sekundach. Będziemy próbować ponownie.")
+                    return "Position still open", 400
+                else:
+                    print("Pozycja zamknięta, kontynuujemy.")
+                
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
                 return "Order error", 500
