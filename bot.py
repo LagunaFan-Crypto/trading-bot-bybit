@@ -17,6 +17,7 @@ session = HTTP(
 )
 
 def send_to_discord(message):
+    """Funkcja wysyłająca wiadomość na Discord."""
     try:
         payload = {"content": message}
         requests.post(DISCORD_WEBHOOK_URL, json=payload)
@@ -24,6 +25,7 @@ def send_to_discord(message):
         print(f"❌ Błąd wysyłania do Discord: {e}")
 
 def get_current_position(symbol):
+    """Funkcja sprawdzająca, czy istnieje otwarta pozycja."""
     try:
         result = session.get_positions(category="linear", symbol=symbol)
         position = result["result"]["list"][0]
@@ -36,6 +38,7 @@ def get_current_position(symbol):
         return 0.0, "None"
 
 def calculate_qty(symbol):
+    """Funkcja do obliczania ilości do zlecenia na podstawie salda."""
     try:
         send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
 
@@ -43,7 +46,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.5
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -65,12 +68,17 @@ def calculate_qty(symbol):
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
 
+def round_to_precision(value, precision=2):
+    """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 2)."""
+    return round(value, precision)
+
 @app.route("/", methods=["GET"])
 def index():
     return "✅ Bot działa!", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    """Obsługuje przychodzący webhook z TradingView."""
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
@@ -85,13 +93,16 @@ def webhook():
 
         # 2. Jeśli istnieją otwarte pozycje, zamykamy je
         if position_size > 0:
+            # Zaokrąglamy wartość pozycji do 2 miejsc po przecinku
+            position_size = round_to_precision(position_size)
+
+            # Upewniamy się, że rozmiar pozycji jest większy niż minimalna wielkość (np. 0.01)
+            if position_size < 0.01:
+                send_to_discord("⚠️ Pozycja jest zbyt mała, aby ją zamknąć.")
+                return "Invalid position size", 400
+
             close_side = "Buy" if position_side == "Sell" else "Sell"
             try:
-                # Upewniamy się, że qty nie jest mniejsze niż 1
-                if position_size < 1:
-                    send_to_discord("⚠️ Zbyt mała pozycja, aby ją zamknąć.")
-                    return "Invalid position size", 400
-
                 close_order = session.place_order(
                     category="linear",
                     symbol=SYMBOL,
@@ -116,7 +127,7 @@ def webhook():
             return "Qty error", 400
 
         # Zaokrąglamy ilość do dwóch miejsc po przecinku
-        qty = round(qty, 2)
+        qty = round_to_precision(qty)
 
         # 4. Składamy zlecenie (Buy/Sell)
         new_side = "Buy" if action == "buy" else "Sell"
