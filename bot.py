@@ -25,6 +25,7 @@ def get_current_position(symbol):
         position = result["result"]["list"][0]
         size = float(position["size"])
         side = position["side"]
+        print(f"🔄 Pozycja: {side} o rozmiarze {size}")
         return size, side
     except Exception as e:
         send_to_discord(f"⚠️ Błąd pobierania pozycji: {e}")
@@ -68,6 +69,7 @@ def index():
 def webhook():
     try:
         data = request.get_json()
+        print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
         action = data.get("action", "").lower()
 
         if action not in ["buy", "sell"]:
@@ -83,7 +85,7 @@ def webhook():
         # 🔒 Zamknięcie każdej otwartej pozycji
         if position_size > 0:
             close_side = "Buy" if position_side == "Sell" else "Sell"
-            session.place_order(
+            close_order = session.place_order(
                 category="linear",
                 symbol=SYMBOL,
                 side=close_side,
@@ -92,11 +94,12 @@ def webhook():
                 reduceOnly=True,
                 timeInForce="GoodTillCancel"
             )
+            print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
             send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
 
         # 🟢 Otwórz nową pozycję zgodnie z kierunkiem strategii
         new_side = "Buy" if action == "buy" else "Sell"
-        session.place_order(
+        new_order = session.place_order(
             category="linear",
             symbol=SYMBOL,
             side=new_side,
@@ -104,12 +107,14 @@ def webhook():
             qty=qty,
             timeInForce="GoodTillCancel"
         )
+        print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
         send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
 
         return "OK", 200
 
     except Exception as e:
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
+        print(f"❌ Błąd: {e}")  # Logowanie błędu
         return "Order error", 500
 
 if __name__ == "__main__":
