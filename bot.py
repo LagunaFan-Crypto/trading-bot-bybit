@@ -2,6 +2,7 @@ import os
 from flask import Flask, request
 from pybit.unified_trading import HTTP
 import requests
+import time
 from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 # Tworzymy instancję aplikacji Flask
@@ -46,7 +47,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.1  # Używamy 10% dostępnego USDT
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -113,6 +114,11 @@ def webhook():
                 )
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
+                
+                # Dodajemy opóźnienie 5 sekund po zamknięciu pozycji
+                time.sleep(5)  # Wstrzymanie na 5 sekund
+                print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
+                
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
                 return "Order error", 500
