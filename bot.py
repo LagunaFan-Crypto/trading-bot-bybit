@@ -166,4 +166,4 @@ def webhook():
 
 if __name__ == "__main__":
     print("Bot uruchomiony...")  # Logowanie rozpoczęcia działania bota
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=10000)  # Zmieniamy port na 10000
