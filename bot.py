@@ -85,15 +85,25 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Obsługuje przychodzący webhook z TradingView."""
-    global last_action, position_open
     try:
-        data = request.get_json()
+        data = request.get_json()  # Odczytuje dane JSON wysłane przez TradingView
         print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
+        
+        # Sprawdzamy akcję
         action = data.get("action", "").lower()
 
+        # Przykładowa walidacja
         if action not in ["buy", "sell"]:
             send_to_discord("⚠️ Nieprawidłowe polecenie. Użyj 'buy' lub 'sell'.")
             return "Invalid action", 400
+
+        # Kolejne kroki bota...
+        # np. wykonywanie zlecenia po otrzymaniu buy/sell
+
+        return "OK", 200
+    except Exception as e:
+        print(f"❌ Błąd: {e}")
+        return "Error", 500
 
         # 1. Sprawdzamy, czy istnieją otwarte pozycje
         position_size, position_side = get_current_position(SYMBOL)
