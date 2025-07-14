@@ -1,13 +1,88 @@
+from flask import Flask, request
+import time
+from pybit.unified_trading import HTTP
+import requests
+from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
+
+# Tworzymy instancję aplikacji Flask
+app = Flask(__name__)
+
+# Upewnij się, że używasz poprawnego portu z Render
+port = int(os.environ.get("PORT", 5000))
+
+session = HTTP(
+    api_key=API_KEY,
+    api_secret=API_SECRET,
+    testnet=TESTNET
+)
+
 # Zmienna śledząca, czy zlecenie zostało już złożone
 order_in_progress = False
 
+def send_to_discord(message):
+    """Funkcja wysyłająca wiadomość na Discord."""
+    try:
+        payload = {"content": message}
+        requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    except Exception as e:
+        print(f"❌ Błąd wysyłania do Discord: {e}")
+
+def get_current_position(symbol):
+    """Funkcja sprawdzająca, czy istnieje otwarta pozycja."""
+    try:
+        result = session.get_positions(category="linear", symbol=symbol)
+        position = result["result"]["list"][0]
+        size = float(position["size"])
+        side = position["side"]
+        print(f"🔄 Pozycja: {side} o rozmiarze {size}")
+        return size, side
+    except Exception as e:
+        send_to_discord(f"⚠️ Błąd pobierania pozycji: {e}")
+        return 0.0, "None"
+
+def calculate_qty(symbol):
+    """Funkcja do obliczania ilości do zlecenia na podstawie salda."""
+    try:
+        send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
+
+        balance_data = session.get_wallet_balance(accountType="UNIFIED")
+        balance_info = balance_data["result"]["list"][0]["coin"]
+        usdt = next(c for c in balance_info if c["coin"] == "USDT")
+        available_usdt = float(usdt.get("walletBalance", 0))
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
+
+        tickers_data = session.get_tickers(category="linear")
+        price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
+
+        if not price_info:
+            send_to_discord(f"⚠️ Symbol {symbol} nie został znaleziony.")
+            return None
+
+        last_price = float(price_info["lastPrice"])
+        qty = int(trade_usdt / last_price)
+
+        if qty < 1:
+            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Za mało USDT.")
+            return None
+
+        send_to_discord(f"✅ Obliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
+        return qty
+    except Exception as e:
+        send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
+        return None
+
+def round_to_precision(value, precision=2):
+    """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 2)."""
+    return round(value, precision)
+
+# Definicja webhooka
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    global last_action, order_in_progress  # Używamy zmiennej globalnej dla flagi
+    global last_action, order_in_progress
 
     try:
         data = request.get_json()
-        print(f"🔔 Otrzymano webhook: {data}")
+        print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
         action = data.get("action", "").lower()
 
         if action not in ["buy", "sell"]:
@@ -51,7 +126,7 @@ def webhook():
         else:
             send_to_discord("⚠️ Brak otwartej pozycji, nie można zamknąć pozycji.")
 
-        # 2. Jeśli pozycja jest zamknięta, możemy złożyć nowe zlecenie
+        # 2. Jeśli pozycja jest zamknięta, składamy nowe zlecenie
         if position_size == 0 and not order_in_progress:  # Tylko jeśli zlecenie jeszcze nie zostało złożone
             order_in_progress = True  # Ustawiamy flagę na True, że zlecenie jest w trakcie składania
             
@@ -87,3 +162,7 @@ def webhook():
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
         print(f"❌ Błąd: {e}")
         return "Order error", 500
+
+if __name__ == "__main__":
+    print("Bot uruchomiony...")  # Logowanie rozpoczęcia działania bota
+    app.run(host="0.0.0.0", port=5000)
