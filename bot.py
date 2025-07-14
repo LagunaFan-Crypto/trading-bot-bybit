@@ -94,9 +94,13 @@ def webhook():
 
         # 2. Jeśli istnieją otwarte pozycje, zamykamy je
         if position_size > 0:
-            position_size = round(position_size, 2)  # Zaokrąglamy do dwóch miejsc po przecinku
+            position_size = round_to_precision(position_size)
 
-            # Zawsze próbuj zamknąć pozycję, bez względu na jej wielkość
+            # Sprawdzamy, czy pozycja jest wystarczająco duża, by ją zamknąć
+            if position_size < 0.01:
+                send_to_discord("⚠️ Pozycja jest zbyt mała, aby ją zamknąć.")
+                return "Invalid position size", 400
+
             close_side = "Buy" if position_side == "Sell" else "Sell"
             try:
                 close_order = session.place_order(
