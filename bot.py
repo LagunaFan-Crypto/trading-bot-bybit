@@ -8,9 +8,10 @@ from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 # Tworzymy instancję aplikacji Flask
 app = Flask(__name__)
 
-# Upewnij się, że używasz poprawnego portu z Render
-port = int(os.environ.get("PORT", 5000))
+# Zmienna globalna przechowująca ostatnią akcję
+last_action = ""  # Inicjalizujemy zmienną przed użyciem
 
+# Tworzymy połączenie z Bybit API
 session = HTTP(
     api_key=API_KEY,
     api_secret=API_SECRET,
@@ -47,9 +48,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        
-        # Zmiana na 10% dostępnego salda
-        trade_usdt = available_usdt * 0.1  # Używamy 10% dostępnego USDT
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -82,6 +81,7 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Obsługuje przychodzący webhook z TradingView."""
+    global last_action
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
@@ -121,6 +121,10 @@ def webhook():
                 )
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
+                
+                # Wstrzymanie na 5 sekund
+                time.sleep(5)
+                print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
                 
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
@@ -162,4 +166,4 @@ def webhook():
 
 if __name__ == "__main__":
     print("Bot uruchomiony...")  # Logowanie rozpoczęcia działania bota
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
