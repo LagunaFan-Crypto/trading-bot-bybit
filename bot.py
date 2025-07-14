@@ -1,8 +1,8 @@
 import os
-import requests
-import time
 from flask import Flask, request
 from pybit.unified_trading import HTTP
+import requests
+import time
 from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 # Tworzymy instancję aplikacji Flask
@@ -11,16 +11,11 @@ app = Flask(__name__)
 # Upewnij się, że używasz poprawnego portu z Render
 port = int(os.environ.get("PORT", 5000))
 
-# Tworzymy sesję dla API Bybit
 session = HTTP(
     api_key=API_KEY,
     api_secret=API_SECRET,
     testnet=TESTNET
 )
-
-# Zmienna śledząca poprzedni alert
-last_action = None
-position_open = False  # Zmienna do śledzenia stanu pozycji
 
 def send_to_discord(message):
     """Funkcja wysyłająca wiadomość na Discord."""
@@ -78,6 +73,8 @@ def round_to_precision(value, precision=2):
     """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 2)."""
     return round(value, precision)
 
+last_action = None
+
 @app.route("/", methods=["GET"])
 def index():
     return "✅ Bot działa!", 200
@@ -85,7 +82,7 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Obsługuje przychodzący webhook z TradingView."""
-    global last_action, position_open
+    global last_action
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
@@ -95,11 +92,16 @@ def webhook():
             send_to_discord("⚠️ Nieprawidłowe polecenie. Użyj 'buy' lub 'sell'.")
             return "Invalid action", 400
 
+        # Sprawdzamy, czy poprzedni alert był tego samego typu
+        if action == last_action:
+            print(f"🔁 Otrzymano powtórny alert: {action}. Ignorowanie zlecenia.")
+            return "Alert ignored", 200
+
         # 1. Sprawdzamy, czy istnieją otwarte pozycje
         position_size, position_side = get_current_position(SYMBOL)
 
         # 2. Jeśli istnieją otwarte pozycje, zamykamy je
-        if position_size > 0 and not position_open:
+        if position_size > 0:
             position_size = round_to_precision(position_size)
 
             # Sprawdzamy, czy pozycja jest wystarczająco duża, by ją zamknąć
@@ -121,7 +123,6 @@ def webhook():
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
                 
-                position_open = True  # Oznaczamy, że pozycja jest otwarta
                 # Wstrzymanie na 5 sekund
                 time.sleep(5)
                 print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
@@ -141,7 +142,7 @@ def webhook():
         qty = round_to_precision(qty)  # Zaokrąglamy ilość do dwóch miejsc po przecinku
 
         # 4. Składamy zlecenie (Buy/Sell) tylko, jeśli pozycja została zamknięta lub nie istnieje
-        if position_size == 0 and not position_open:  # Zlecenie tylko, gdy pozycja jest zamknięta
+        if position_size == 0:  # Zlecenie tylko, gdy pozycja jest zamknięta
             new_side = "Buy" if action == "buy" else "Sell"
             new_order = session.place_order(
                 category="linear",
@@ -164,8 +165,6 @@ def webhook():
         print(f"❌ Błąd: {e}")  # Logowanie błędu
         return "Order error", 500
 
-
-# Uruchamiamy aplikację Flask
 if __name__ == "__main__":
     print("Bot uruchomiony...")  # Logowanie rozpoczęcia działania bota
     app.run(host="0.0.0.0", port=port)
