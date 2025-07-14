@@ -2,7 +2,6 @@ import os
 from flask import Flask, request
 from pybit.unified_trading import HTTP
 import requests
-import time
 from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 # Tworzymy instancję aplikacji Flask
@@ -69,10 +68,6 @@ def calculate_qty(symbol):
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
 
-def round_to_precision(value, precision=2):
-    """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 2)."""
-    return round(value, precision)
-
 @app.route("/", methods=["GET"])
 def index():
     return "✅ Bot działa!", 200
@@ -94,9 +89,13 @@ def webhook():
 
         # 2. Jeśli istnieją otwarte pozycje, zamykamy je
         if position_size > 0:
-            position_size = round_to_precision(position_size)
+            position_size = round(position_size, 2)
 
-            # Zamykanie tylko, jeśli pozycja jest większa niż 0
+            # Sprawdzamy, czy pozycja jest wystarczająco duża, by ją zamknąć
+            if position_size < 0.01:
+                send_to_discord("⚠️ Pozycja jest zbyt mała, aby ją zamknąć.")
+                return "Invalid position size", 400
+
             close_side = "Buy" if position_side == "Sell" else "Sell"
             try:
                 close_order = session.place_order(
@@ -110,22 +109,10 @@ def webhook():
                 )
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
-                
-                # Dodajemy opóźnienie 5 sekund po zamknięciu pozycji
-                time.sleep(5)  # Wstrzymanie na 5 sekund
-                print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
-                
-                # Sprawdzamy status pozycji po opóźnieniu
-                position_size, _ = get_current_position(SYMBOL)
-                if position_size > 0:
-                    send_to_discord(f"⚠️ Pozycja nadal otwarta po 5 sekundach. Będziemy próbować ponownie.")
-                    return "Position still open", 400
-                else:
-                    print("Pozycja zamknięta, kontynuujemy.")
-                
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
                 return "Order error", 500
+
         else:
             send_to_discord("⚠️ Brak otwartej pozycji, nie można zamknąć pozycji.")
 
@@ -134,8 +121,6 @@ def webhook():
         if qty is None or qty < 0.01:
             send_to_discord(f"⚠️ Obliczona ilość to {qty}. Zbyt mało środków na zlecenie.")
             return "Qty error", 400
-
-        qty = round_to_precision(qty)  # Zaokrąglamy ilość do dwóch miejsc po przecinku
 
         # 4. Składamy zlecenie (Buy/Sell) tylko, jeśli pozycja została zamknięta lub nie istnieje
         if position_size == 0:  # Zlecenie tylko, gdy pozycja jest zamknięta
