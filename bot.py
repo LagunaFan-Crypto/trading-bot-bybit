@@ -69,8 +69,8 @@ def calculate_qty(symbol):
         send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
         return None
 
-def round_to_precision(value, precision=2):
-    """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 2)."""
+def round_to_precision(value, precision=4):
+    """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 4)."""
     return round(value, precision)
 
 @app.route("/", methods=["GET"])
@@ -137,7 +137,7 @@ def webhook():
             send_to_discord(f"⚠️ Obliczona ilość to {qty}. Zbyt mało środków na zlecenie.")
             return "Qty error", 400
 
-        qty = round_to_precision(qty)  # Zaokrąglamy ilość do dwóch miejsc po przecinku
+        qty = round_to_precision(qty)  # Zaokrąglamy ilość do czterech miejsc po przecinku
 
         # 4. Składamy zlecenie (Buy/Sell) tylko, jeśli pozycja została zamknięta lub nie istnieje
         if position_size == 0:  # Zlecenie tylko, gdy pozycja jest zamknięta
