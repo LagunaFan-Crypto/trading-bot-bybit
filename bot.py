@@ -1,8 +1,8 @@
 import os
+import time
 from flask import Flask, request
 from pybit.unified_trading import HTTP
 import requests
-import time
 from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 # Tworzymy instancję aplikacji Flask
@@ -17,7 +17,7 @@ session = HTTP(
     testnet=TESTNET
 )
 
-last_action = None
+last_action = None  # Przechowujemy ostatnią akcję
 
 def send_to_discord(message):
     """Funkcja wysyłająca wiadomość na Discord."""
@@ -49,9 +49,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        
-        # Zmieniamy procent salda, który będzie wykorzystywany do zlecenia
-        trade_usdt = available_usdt * 0.10  # Zmiana procenta na 10%
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -125,6 +123,10 @@ def webhook():
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
                 
+                # Wstrzymanie na 5 sekund
+                time.sleep(5)
+                print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
+                
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
                 return "Order error", 500
@@ -163,6 +165,7 @@ def webhook():
         print(f"❌ Błąd: {e}")  # Logowanie błędu
         return "Order error", 500
 
+# Sprawdzamy, czy skrypt jest uruchamiany jako główny program
 if __name__ == "__main__":
     print("Bot uruchomiony...")  # Logowanie rozpoczęcia działania bota
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)  # Uruchomienie serwera Flask na wskazanym porcie
