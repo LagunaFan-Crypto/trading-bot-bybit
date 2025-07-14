@@ -1,8 +1,8 @@
 import os
-from flask import Flask, request
-from pybit.unified_trading import HTTP
 import requests
 import time
+from flask import Flask, request
+from pybit.unified_trading import HTTP
 from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 # Tworzymy instancję aplikacji Flask
@@ -11,11 +11,16 @@ app = Flask(__name__)
 # Upewnij się, że używasz poprawnego portu z Render
 port = int(os.environ.get("PORT", 5000))
 
+# Tworzymy sesję dla API Bybit
 session = HTTP(
     api_key=API_KEY,
     api_secret=API_SECRET,
     testnet=TESTNET
 )
+
+# Zmienna śledząca poprzedni alert
+last_action = None
+position_open = False  # Zmienna do śledzenia stanu pozycji
 
 def send_to_discord(message):
     """Funkcja wysyłająca wiadomość na Discord."""
@@ -47,7 +52,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
+        trade_usdt = available_usdt * 0.1  # Używamy 10% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -80,6 +85,7 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Obsługuje przychodzący webhook z TradingView."""
+    global last_action, position_open
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
@@ -93,7 +99,7 @@ def webhook():
         position_size, position_side = get_current_position(SYMBOL)
 
         # 2. Jeśli istnieją otwarte pozycje, zamykamy je
-        if position_size > 0:
+        if position_size > 0 and not position_open:
             position_size = round_to_precision(position_size)
 
             # Sprawdzamy, czy pozycja jest wystarczająco duża, by ją zamknąć
@@ -115,17 +121,10 @@ def webhook():
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
                 
-                # Dodajemy opóźnienie 5 sekund po zamknięciu pozycji
-                time.sleep(5)  # Wstrzymanie na 5 sekund
+                position_open = True  # Oznaczamy, że pozycja jest otwarta
+                # Wstrzymanie na 5 sekund
+                time.sleep(5)
                 print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
-                
-                # Sprawdzamy status pozycji po opóźnieniu
-                position_size, _ = get_current_position(SYMBOL)
-                if position_size > 0:
-                    send_to_discord(f"⚠️ Pozycja nadal otwarta po 5 sekundach. Będziemy próbować ponownie.")
-                    return "Position still open", 400
-                else:
-                    print("Pozycja zamknięta, kontynuujemy.")
                 
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
@@ -142,7 +141,7 @@ def webhook():
         qty = round_to_precision(qty)  # Zaokrąglamy ilość do dwóch miejsc po przecinku
 
         # 4. Składamy zlecenie (Buy/Sell) tylko, jeśli pozycja została zamknięta lub nie istnieje
-        if position_size == 0:  # Zlecenie tylko, gdy pozycja jest zamknięta
+        if position_size == 0 and not position_open:  # Zlecenie tylko, gdy pozycja jest zamknięta
             new_side = "Buy" if action == "buy" else "Sell"
             new_order = session.place_order(
                 category="linear",
@@ -154,6 +153,7 @@ def webhook():
             )
             print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
             send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
+            last_action = action  # Zapamiętujemy ostatni alert
         else:
             send_to_discord(f"⚠️ Pozycja nie została jeszcze zamknięta, nie składamy nowego zlecenia.")
 
@@ -164,6 +164,8 @@ def webhook():
         print(f"❌ Błąd: {e}")  # Logowanie błędu
         return "Order error", 500
 
+
+# Uruchamiamy aplikację Flask
 if __name__ == "__main__":
     print("Bot uruchomiony...")  # Logowanie rozpoczęcia działania bota
     app.run(host="0.0.0.0", port=port)
