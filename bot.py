@@ -114,18 +114,16 @@ def webhook():
                 )
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
-                
-                # Wstrzymanie na 1 sekundę
-                time.sleep(1)
-                print("⏳ Odczekano 1 sekundę przed kolejnym działaniem.")
 
-                # Ponowne sprawdzenie pozycji po 1 sekundzie
-                position_size, _ = get_current_position(SYMBOL)
-                if position_size == 0:
-                    print("Pozycja zamknięta, kontynuujemy.")
-                else:
-                    send_to_discord("⚠️ Pozycja nie została zamknięta. Spróbujemy ponownie.")
-                    return "Position still open", 400
+                # Sprawdzamy status pozycji co 1 sekundę, aż zostanie zamknięta
+                while True:
+                    time.sleep(1)
+                    position_size, _ = get_current_position(SYMBOL)
+                    if position_size == 0:
+                        print("Pozycja zamknięta, kontynuujemy.")
+                        break
+                    else:
+                        send_to_discord("⚠️ Pozycja nadal otwarta, sprawdzamy ponownie.")
 
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
