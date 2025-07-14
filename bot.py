@@ -1,7 +1,8 @@
+import os
 from flask import Flask, request
-import time
 from pybit.unified_trading import HTTP
 import requests
+import time
 from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 # Tworzymy instancję aplikacji Flask
@@ -15,9 +16,6 @@ session = HTTP(
     api_secret=API_SECRET,
     testnet=TESTNET
 )
-
-# Zmienna śledząca, czy zlecenie zostało już złożone
-order_in_progress = False
 
 def send_to_discord(message):
     """Funkcja wysyłająca wiadomość na Discord."""
@@ -49,7 +47,9 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
+        
+        # Zmiana na 10% dostępnego salda
+        trade_usdt = available_usdt * 0.1  # Używamy 10% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -75,11 +75,13 @@ def round_to_precision(value, precision=2):
     """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 2)."""
     return round(value, precision)
 
-# Definicja webhooka
+@app.route("/", methods=["GET"])
+def index():
+    return "✅ Bot działa!", 200
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    global last_action, order_in_progress
-
+    """Obsługuje przychodzący webhook z TradingView."""
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
@@ -97,10 +99,11 @@ def webhook():
         # 1. Sprawdzamy, czy istnieją otwarte pozycje
         position_size, position_side = get_current_position(SYMBOL)
 
-        # Jeśli pozycja nie została jeszcze zamknięta
+        # 2. Jeśli istnieją otwarte pozycje, zamykamy je
         if position_size > 0:
             position_size = round_to_precision(position_size)
 
+            # Sprawdzamy, czy pozycja jest wystarczająco duża, by ją zamknąć
             if position_size < 0.01:
                 send_to_discord("⚠️ Pozycja jest zbyt mała, aby ją zamknąć.")
                 return "Invalid position size", 400
@@ -116,9 +119,8 @@ def webhook():
                     reduceOnly=True,
                     timeInForce="GoodTillCancel"
                 )
-                print(f"Zamknięcie pozycji: {close_order}")
+                print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
-                time.sleep(5)
                 
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
@@ -126,19 +128,16 @@ def webhook():
         else:
             send_to_discord("⚠️ Brak otwartej pozycji, nie można zamknąć pozycji.")
 
-        # 2. Jeśli pozycja jest zamknięta, składamy nowe zlecenie
-        if position_size == 0 and not order_in_progress:  # Tylko jeśli zlecenie jeszcze nie zostało złożone
-            order_in_progress = True  # Ustawiamy flagę na True, że zlecenie jest w trakcie składania
-            
-            qty = calculate_qty(SYMBOL)
-            if qty is None or qty < 0.01:
-                send_to_discord(f"⚠️ Obliczona ilość to {qty}. Zbyt mało środków na zlecenie.")
-                order_in_progress = False
-                return "Qty error", 400
+        # 3. Sprawdzamy stan konta i obliczamy kwotę potrzebną do złożenia zlecenia
+        qty = calculate_qty(SYMBOL)
+        if qty is None or qty < 0.01:
+            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Zbyt mało środków na zlecenie.")
+            return "Qty error", 400
 
-            qty = round_to_precision(qty)
+        qty = round_to_precision(qty)  # Zaokrąglamy ilość do dwóch miejsc po przecinku
 
-            # Składamy zlecenie w zależności od akcji
+        # 4. Składamy zlecenie (Buy/Sell) tylko, jeśli pozycja została zamknięta lub nie istnieje
+        if position_size == 0:  # Zlecenie tylko, gdy pozycja jest zamknięta
             new_side = "Buy" if action == "buy" else "Sell"
             new_order = session.place_order(
                 category="linear",
@@ -148,11 +147,9 @@ def webhook():
                 qty=qty,
                 timeInForce="GoodTillCancel"
             )
-            print(f"Nowe zlecenie: {new_order}")
+            print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
             send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
-            last_action = action
-            order_in_progress = False  # Po złożeniu zlecenia resetujemy flagę
-
+            last_action = action  # Zapamiętujemy ostatni alert
         else:
             send_to_discord(f"⚠️ Pozycja nie została jeszcze zamknięta, nie składamy nowego zlecenia.")
 
@@ -160,9 +157,9 @@ def webhook():
 
     except Exception as e:
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
-        print(f"❌ Błąd: {e}")
+        print(f"❌ Błąd: {e}")  # Logowanie błędu
         return "Order error", 500
 
 if __name__ == "__main__":
     print("Bot uruchomiony...")  # Logowanie rozpoczęcia działania bota
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=port)
