@@ -47,7 +47,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.1  # Używamy 10% dostępnego USDT
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -73,8 +73,6 @@ def round_to_precision(value, precision=2):
     """Funkcja do zaokrąglania wartości do określonej liczby miejsc po przecinku (domyślnie 2)."""
     return round(value, precision)
 
-last_action = None
-
 @app.route("/", methods=["GET"])
 def index():
     return "✅ Bot działa!", 200
@@ -82,7 +80,6 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Obsługuje przychodzący webhook z TradingView."""
-    global last_action
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")  # Logowanie otrzymanych danych
@@ -91,11 +88,6 @@ def webhook():
         if action not in ["buy", "sell"]:
             send_to_discord("⚠️ Nieprawidłowe polecenie. Użyj 'buy' lub 'sell'.")
             return "Invalid action", 400
-
-        # Sprawdzamy, czy poprzedni alert był tego samego typu
-        if action == last_action:
-            print(f"🔁 Otrzymano powtórny alert: {action}. Ignorowanie zlecenia.")
-            return "Alert ignored", 200
 
         # 1. Sprawdzamy, czy istnieją otwarte pozycje
         position_size, position_side = get_current_position(SYMBOL)
@@ -123,10 +115,18 @@ def webhook():
                 print(f"Zamknięcie pozycji: {close_order}")  # Logowanie zamknięcia pozycji
                 send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
                 
-                # Wstrzymanie na 5 sekund
-                time.sleep(5)
-                print("⏳ Odczekano 5 sekund przed kolejnym działaniem.")
-                
+                # Wstrzymanie na 1 sekundę
+                time.sleep(1)
+                print("⏳ Odczekano 1 sekundę przed kolejnym działaniem.")
+
+                # Ponowne sprawdzenie pozycji po 1 sekundzie
+                position_size, _ = get_current_position(SYMBOL)
+                if position_size == 0:
+                    print("Pozycja zamknięta, kontynuujemy.")
+                else:
+                    send_to_discord("⚠️ Pozycja nie została zamknięta. Spróbujemy ponownie.")
+                    return "Position still open", 400
+
             except Exception as e:
                 send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
                 return "Order error", 500
@@ -154,7 +154,6 @@ def webhook():
             )
             print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
             send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
-            last_action = action  # Zapamiętujemy ostatni alert
         else:
             send_to_discord(f"⚠️ Pozycja nie została jeszcze zamknięta, nie składamy nowego zlecenia.")
 
