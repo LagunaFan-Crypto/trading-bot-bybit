@@ -17,9 +17,6 @@ session = HTTP(
     testnet=TESTNET
 )
 
-# Zmienna do śledzenia ceny otwarcia transakcji
-open_price = None
-
 def send_to_discord(message):
     """Funkcja wysyłająca wiadomość na Discord."""
     try:
@@ -124,10 +121,6 @@ def webhook():
                     position_size, _ = get_current_position(SYMBOL)
                     if position_size == 0:
                         print("Pozycja zamknięta, kontynuujemy.")
-                        # Obliczamy wynik transakcji (zysk/strata)
-                        if open_price:
-                            profit_loss = (float(close_order["result"]["avgFillPrice"]) - open_price) * position_size
-                            send_to_discord(f"✅ Zysk/Strata z transakcji: {profit_loss} USDT")
                         break
                     else:
                         send_to_discord("⚠️ Pozycja nadal otwarta, sprawdzamy ponownie.")
@@ -157,7 +150,6 @@ def webhook():
                 qty=qty,
                 timeInForce="GoodTillCancel"
             )
-            open_price = float(new_order["result"]["avgFillPrice"])  # Przechowujemy cenę otwarcia
             print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
             send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
         else:
