@@ -3,6 +3,7 @@ from flask import Flask, request
 from pybit.unified_trading import HTTP
 import requests
 import time
+from datetime import datetime
 from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
 
 # Tworzymy instancję aplikacji Flask
@@ -17,8 +18,9 @@ session = HTTP(
     testnet=TESTNET
 )
 
-# Zmienna do śledzenia ceny otwarcia transakcji
+# Zmienna do śledzenia ceny otwarcia transakcji oraz czasu otwarcia
 open_price = None
+open_time = None
 
 def send_to_discord(message):
     """Funkcja wysyłająca wiadomość na Discord."""
@@ -126,8 +128,10 @@ def webhook():
                         print("Pozycja zamknięta, kontynuujemy.")
                         # Obliczamy wynik transakcji (zysk/strata)
                         if open_price:
-                            profit_loss = (float(close_order["result"]["avgFillPrice"]) - open_price) * position_size
-                            send_to_discord(f"✅ Zysk/Strata z transakcji: {profit_loss} USDT")
+                            close_price = float(close_order["result"]["avgFillPrice"])
+                            profit_loss = (close_price - open_price) * position_size
+                            duration = datetime.now() - open_time
+                            send_to_discord(f"✅ Zysk/Strata z transakcji: {profit_loss} USDT, Czas trwania: {duration}")
                         break
                     else:
                         send_to_discord("⚠️ Pozycja nadal otwarta, sprawdzamy ponownie.")
@@ -158,6 +162,7 @@ def webhook():
                 timeInForce="GoodTillCancel"
             )
             open_price = float(new_order["result"]["avgFillPrice"])  # Przechowujemy cenę otwarcia
+            open_time = datetime.now()  # Przechowujemy czas otwarcia
             print(f"Nowe zlecenie: {new_order}")  # Logowanie nowego zlecenia
             send_to_discord(f"✅ {new_side.upper()} zlecenie złożone: {qty} {SYMBOL}")
         else:
