@@ -33,6 +33,12 @@ def get_current_position(symbol):
         size = float(position["size"])
         side = position["side"]
         print(f"🔄 Pozycja: {side} o rozmiarze {size}")
+        
+        # Sprawdzamy, czy pozycja jest wystarczająco duża, aby ją zamknąć (min. 0.0001)
+        if size < 0.0001:
+            send_to_discord(f"⚠️ Pozycja {side} jest zbyt mała, aby ją zamknąć.")
+            return 0.0, "None"
+        
         return size, side
     except Exception as e:
         send_to_discord(f"⚠️ Błąd pobierania pozycji: {e}")
@@ -58,10 +64,6 @@ def calculate_qty(symbol):
 
         last_price = float(price_info["lastPrice"])
         qty = int(trade_usdt / last_price)
-
-        if qty < 1:
-            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Za mało USDT.")
-            return None
 
         send_to_discord(f"✅ Obliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
         return qty
