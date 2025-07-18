@@ -94,7 +94,7 @@ def webhook():
         # Sprawdzanie, czy pozycja jest otwarta
         position_size, position_side = get_current_position(SYMBOL)
 
-        # Sprawdzamy, czy pozycja jest już otwarta
+        # Jeśli pozycja już jest otwarta, nie składamy nowego zlecenia
         if position_size > 0:
             send_to_discord(f"⚠️ Pozycja już otwarta, nie składam nowego zlecenia.")
             return "Pozycja już otwarta", 200
