@@ -53,7 +53,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.2  # Używamy 20% dostępnego USDT
+        trade_usdt = available_usdt * 0.5  # Używamy 50% dostępnego USDT
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -94,38 +94,80 @@ def webhook():
         # Sprawdzanie, czy pozycja jest otwarta
         position_size, position_side = get_current_position(SYMBOL)
 
-        # Jeśli pozycja już jest otwarta, nie składamy nowego zlecenia
-        if position_size > 0:
-            send_to_discord(f"⚠️ Pozycja już otwarta, nie składam nowego zlecenia.")
-            return "Pozycja już otwarta", 200
+        # Jeśli pozycja jest już otwarta w odpowiednim kierunku
+        if position_size > 0 and position_side == "Buy" and action == "buy":
+            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (BUY), nie składam nowego zlecenia.")
+            return "Pozycja już otwarta w odpowiednim kierunku", 200
+        
+        if position_size > 0 and position_side == "Sell" and action == "sell":
+            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (SELL), nie składam nowego zlecenia.")
+            return "Pozycja już otwarta w odpowiednim kierunku", 200
 
-        # Jeśli pozycja nie jest otwarta, składamy nowe zlecenie
-        qty = calculate_qty(SYMBOL)  # Oblicz ilość do zlecenia
-        if qty is not None and qty > 0:
-            if action == "buy":
-                new_order = session.place_order(
-                    category="linear",
-                    symbol=SYMBOL,
-                    side="Buy",
-                    orderType="Market",
-                    qty=qty,
-                    timeInForce="GoodTillCancel"
-                )
-                send_to_discord(f"✅ Zlecenie BUY złożone: {qty} {SYMBOL}")
-            elif action == "sell":
-                new_order = session.place_order(
-                    category="linear",
-                    symbol=SYMBOL,
-                    side="Sell",
-                    orderType="Market",
-                    qty=qty,
-                    timeInForce="GoodTillCancel"
-                )
-                send_to_discord(f"✅ Zlecenie SELL złożone: {qty} {SYMBOL}")
+        # Jeśli pozycja jest otwarta w przeciwnym kierunku, zamknij ją
+        if position_size > 0 and (
+            (position_side == "Buy" and action == "sell") or
+            (position_side == "Sell" and action == "buy")
+        ):
+            # Zamykamy poprzednią pozycję
+            close_side = "Sell" if position_side == "Buy" else "Buy"
+            close_order = session.place_order(
+                category="linear",
+                symbol=SYMBOL,
+                side=close_side,
+                orderType="Market",
+                qty=position_size,
+                reduceOnly=True,
+                timeInForce="GoodTillCancel"
+            )
+            send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
+
+            # Po zamknięciu poprzedniej pozycji składamy nowe zlecenie
+            qty = calculate_qty(SYMBOL)
+            if qty is not None and qty > 0:
+                if action == "buy":
+                    new_order = session.place_order(
+                        category="linear",
+                        symbol=SYMBOL,
+                        side="Buy",
+                        orderType="Market",
+                        qty=qty,
+                        timeInForce="GoodTillCancel"
+                    )
+                    send_to_discord(f"✅ Zlecenie BUY złożone: {qty} {SYMBOL}")
+                elif action == "sell":
+                    new_order = session.place_order(
+                        category="linear",
+                        symbol=SYMBOL,
+                        side="Sell",
+                        orderType="Market",
+                        qty=qty,
+                        timeInForce="GoodTillCancel"
+                    )
+                    send_to_discord(f"✅ Zlecenie SELL złożone: {qty} {SYMBOL}")
         else:
-            send_to_discord(f"⚠️ Obliczona ilość to {qty}. Zbyt mało środków na zlecenie.")
-            return "Qty error", 400
-
+            # Jeśli pozycja nie jest otwarta, składamy nowe zlecenie
+            qty = calculate_qty(SYMBOL)
+            if qty is not None and qty > 0:
+                if action == "buy":
+                    new_order = session.place_order(
+                        category="linear",
+                        symbol=SYMBOL,
+                        side="Buy",
+                        orderType="Market",
+                        qty=qty,
+                        timeInForce="GoodTillCancel"
+                    )
+                    send_to_discord(f"✅ Zlecenie BUY złożone: {qty} {SYMBOL}")
+                elif action == "sell":
+                    new_order = session.place_order(
+                        category="linear",
+                        symbol=SYMBOL,
+                        side="Sell",
+                        orderType="Market",
+                        qty=qty,
+                        timeInForce="GoodTillCancel"
+                    )
+                    send_to_discord(f"✅ Zlecenie SELL złożone: {qty} {SYMBOL}")
         return "OK", 200
 
     except Exception as e:
