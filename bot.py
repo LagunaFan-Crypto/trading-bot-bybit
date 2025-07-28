@@ -96,40 +96,29 @@ def webhook():
 
         position_size, position_side = get_current_position(SYMBOL)
 
-        if position_size > 0 and position_side == "Buy" and action == "buy":
-            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (BUY), nie składam nowego zlecenia.")
-            processing = False
-            return "Pozycja BUY już otwarta", 200
-
-        if position_size > 0 and position_side == "Sell" and action == "sell":
-            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (SELL), nie składam nowego zlecenia.")
-            processing = False
-            return "Pozycja SELL już otwarta", 200
-
-        if position_size > 0 and (
-            (position_side == "Buy" and action == "sell") or
-            (position_side == "Sell" and action == "buy")
-        ):
+        # Odwracamy stronę działania z alertu do zamknięcia aktualnej pozycji
+        if position_size > 0:
             close_side = "Sell" if position_side == "Buy" else "Buy"
-            try:
-                close_order = session.place_order(
-                    category="linear",
-                    symbol=SYMBOL,
-                    side=close_side,
-                    orderType="Market",
-                    qty=position_size,
-                    reduceOnly=True,
-                    timeInForce="GoodTillCancel"
-                )
-                send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
-            except Exception as e:
-                send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
+            if (action == "buy" and position_side == "Sell") or (action == "sell" and position_side == "Buy"):
+                try:
+                    session.place_order(
+                        category="linear",
+                        symbol=SYMBOL,
+                        side=close_side,
+                        orderType="Market",
+                        qty=position_size,
+                        reduceOnly=True,
+                        timeInForce="GoodTillCancel"
+                    )
+                    send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
+                except Exception as e:
+                    send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
 
-            time.sleep(3)
-            position_size, position_side = get_current_position(SYMBOL)
+                time.sleep(3)
+                position_size, position_side = get_current_position(SYMBOL)
 
+        # Składamy nowe zlecenie jeśli nie ma aktywnej pozycji
         if position_size < 0.0001:
-            send_to_discord("⚠️ Pozycja zbyt mała lub brak pozycji. Składam nowe zlecenie.")
             qty = calculate_qty(SYMBOL)
             if qty is None or qty == 0:
                 send_to_discord("⚠️ Ilość nieprawidłowa, przerywam operację.")
@@ -137,21 +126,21 @@ def webhook():
                 return "Invalid qty", 400
 
             order_side = "Buy" if action == "buy" else "Sell"
-            new_order = session.place_order(
-                category="linear",
-                symbol=SYMBOL,
-                side=order_side,
-                orderType="Market",
-                qty=qty,
-                timeInForce="GoodTillCancel"
-            )
-            send_to_discord(f"✅ Zlecenie {order_side.upper()} złożone: {qty} {SYMBOL}")
-            processing = False
-            return "OK", 200
+            try:
+                session.place_order(
+                    category="linear",
+                    symbol=SYMBOL,
+                    side=order_side,
+                    orderType="Market",
+                    qty=qty,
+                    timeInForce="GoodTillCancel"
+                )
+                send_to_discord(f"✅ Zlecenie {order_side.upper()} złożone: {qty} {SYMBOL}")
+            except Exception as e:
+                send_to_discord(f"❌ Błąd składania nowego zlecenia: {e}")
 
         processing = False
-        send_to_discord("⚠️ Nie udało się spełnić warunków do złożenia zlecenia.")
-        return "Brak działań", 200
+        return "OK", 200
 
     except Exception as e:
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
