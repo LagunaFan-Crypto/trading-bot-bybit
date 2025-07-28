@@ -33,12 +33,12 @@ def get_current_position(symbol):
         side = position["side"]
         return size, side
     except Exception as e:
-        send_to_discord(f"⚠️ Błąd pobierania pozycji: {e}")
+        send_to_discord(f"❗ Błąd pobierania pozycji: {e}")
         return 0.0, "None"
 
 def calculate_qty(symbol):
     try:
-        send_to_discord("🔍 Obliczanie wielkości zlecenia...")
+        send_to_discord("📊 Obliczam wielkość nowej pozycji...")
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
@@ -48,15 +48,15 @@ def calculate_qty(symbol):
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
         if not price_info:
-            send_to_discord(f"⚠️ Symbol {symbol} nie znaleziony.")
+            send_to_discord(f"❗ Symbol {symbol} nie znaleziony.")
             return None
 
         last_price = float(price_info["lastPrice"])
         qty = int(trade_usdt / last_price)
-        send_to_discord(f"✅ Obliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
+        send_to_discord(f"✅ Ilość do zlecenia: {qty} {symbol} przy cenie {last_price} USDT")
         return qty
     except Exception as e:
-        send_to_discord(f"⚠️ Błąd obliczania ilości: {e}")
+        send_to_discord(f"❗ Błąd podczas obliczania ilości: {e}")
         return None
 
 @app.route("/", methods=["GET"])
@@ -69,11 +69,11 @@ def webhook():
 
     current_time = time.time()
     if current_time - last_alert_time < ALERT_COOLDOWN:
-        send_to_discord("⏳ Odrzucono alert — za szybko po poprzednim.")
+        send_to_discord("⏳ Alert zignorowany — zbyt krótki odstęp czasu.")
         return "Too soon", 429
 
     if processing:
-        send_to_discord("⏳ Bot już przetwarza poprzedni alert. Pomijam.")
+        send_to_discord("⏳ Poprzedni alert nadal przetwarzany. Pomijam ten.")
         return "Processing in progress", 429
 
     processing = True
@@ -81,26 +81,26 @@ def webhook():
 
     try:
         data = request.get_json()
-        print(f"🔔 Webhook: {data}")
+        print(f"🔔 Odebrano alert: {data}")
         action = data.get("action", "").lower()
 
         if action not in ["buy", "sell"]:
-            send_to_discord(f"⚠️ Nieprawidłowe polecenie: '{action}'. Użyj 'buy' lub 'sell'.")
+            send_to_discord(f"⚠️ Nieprawidłowe polecenie: '{action}'. Dozwolone: 'buy' lub 'sell'.")
             processing = False
             return "Invalid action", 400
 
         position_size, position_side = get_current_position(SYMBOL)
 
-        # Jeśli pozycja jest już otwarta w odpowiednim kierunku — zakończ przetwarzanie
+        # Sprawdzenie czy pozycja jest już w odpowiednim kierunku
         if position_size > 0 and (
             (action == "buy" and position_side == "Buy") or
             (action == "sell" and position_side == "Sell")
         ):
-            send_to_discord(f"⚠️ Pozycja już otwarta w odpowiednim kierunku ({position_side.upper()}), nie składam nowego zlecenia.")
+            send_to_discord(f"ℹ️ Pozycja już otwarta w kierunku {position_side.upper()} — brak akcji.")
             processing = False
             return "Position already open", 200
 
-        # Jeśli otwarta pozycja istnieje — zamykamy ją
+        # Zamknięcie pozycji jeśli otwarta i niezgodna
         if position_size > 0.0001:
             close_side = "Sell" if position_side == "Buy" else "Buy"
             try:
@@ -113,17 +113,17 @@ def webhook():
                     reduceOnly=True,
                     timeInForce="GoodTillCancel"
                 )
-                send_to_discord(f"🔒 Zamknięcie pozycji {position_side} ({position_size} {SYMBOL})")
+                send_to_discord(f"🔒 Zamknięto pozycję {position_side.upper()} ({position_size} {SYMBOL})")
                 time.sleep(1.5)
             except Exception as e:
-                send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
+                send_to_discord(f"❗ Błąd przy zamykaniu pozycji: {e}")
 
-        # Po zamknięciu lub braku pozycji, składamy nowe zlecenie
+        # Otwarcie nowej pozycji jeśli brak pozycji
         position_size, _ = get_current_position(SYMBOL)
         if position_size < 0.0001:
             qty = calculate_qty(SYMBOL)
             if qty is None or qty == 0:
-                send_to_discord("⚠️ Pozycja zbyt mała. Przerywam dalsze działania.")
+                send_to_discord("⚠️ Zbyt mała ilość do otwarcia pozycji. Anuluję.")
                 processing = False
                 return "Invalid qty", 400
 
@@ -137,18 +137,18 @@ def webhook():
                     qty=qty,
                     timeInForce="GoodTillCancel"
                 )
-                send_to_discord(f"✅ Zlecenie {side.upper()} złożone: {qty} {SYMBOL}")
+                send_to_discord(f"📥 Otwarto pozycję {side.upper()} ({qty} {SYMBOL})")
             except Exception as e:
-                send_to_discord(f"❌ Błąd składania zlecenia: {e}")
+                send_to_discord(f"❗ Błąd przy składaniu zlecenia: {e}")
 
         processing = False
         return "OK", 200
 
     except Exception as e:
-        send_to_discord(f"❌ Błąd składania zlecenia: {e}")
+        send_to_discord(f"❗ Błąd systemowy: {e}")
         processing = False
         return "Webhook error", 500
 
 if __name__ == "__main__":
-    print("Bot uruchomiony...")
+    print("🚀 Bot uruchomiony...")
     app.run(host="0.0.0.0", port=port)
