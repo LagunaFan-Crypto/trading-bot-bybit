@@ -14,6 +14,8 @@ session = HTTP(
     testnet=TESTNET
 )
 
+processing = False
+
 def send_to_discord(message):
     try:
         payload = {"content": message}
@@ -30,8 +32,8 @@ def get_current_position(symbol):
         print(f"🔄 Pozycja: {side} o rozmiarze {size}")
 
         if size < 0.0001:
-            send_to_discord(f"⚠️ Pozycja {side} jest zbyt mała, aby ją zamknąć.")
-            return 0.0, "None"
+            send_to_discord(f"⚠️ Pozycja {side} zbyt mała. Przerywam dalsze działania.")
+            return 0.0, "TooSmall"
 
         return size, side
     except Exception as e:
@@ -70,6 +72,12 @@ def index():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    global processing
+    if processing:
+        send_to_discord("⏳ Bot już przetwarza poprzedni alert. Pomijam.")
+        return "Processing in progress", 429
+
+    processing = True
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")
@@ -80,17 +88,21 @@ def webhook():
             return "Invalid action", 400
 
         position_size, position_side = get_current_position(SYMBOL)
+        if position_side == "TooSmall":
+            return "Too small to continue", 200
 
-        if position_size > 0 and position_side.lower() == action:
-            send_to_discord(f"⚠️ Pozycja już otwarta w odpowiednim kierunku ({position_side.upper()}), nie składam nowego zlecenia.")
-            return "Pozycja już otwarta", 200
+        if position_size > 0 and position_side == "Buy" and action == "buy":
+            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (BUY), nie składam nowego zlecenia.")
+            return "Pozycja BUY już otwarta", 200
 
-        needs_close = (
+        if position_size > 0 and position_side == "Sell" and action == "sell":
+            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (SELL), nie składam nowego zlecenia.")
+            return "Pozycja SELL już otwarta", 200
+
+        if position_size > 0 and (
             (position_side == "Buy" and action == "sell") or
             (position_side == "Sell" and action == "buy")
-        )
-
-        if position_size > 0 and needs_close:
+        ):
             close_side = "Sell" if position_side == "Buy" else "Buy"
             close_order = session.place_order(
                 category="linear",
@@ -105,8 +117,9 @@ def webhook():
 
             time.sleep(3)
             position_size, position_side = get_current_position(SYMBOL)
-
-            if position_size > 0:
+            if position_side == "TooSmall" or position_size == 0:
+                send_to_discord("✅ Pozycja została pomyślnie zamknięta.")
+            else:
                 send_to_discord("⚠️ Pozycja nadal otwarta po próbie zamknięcia. Przerywam operację.")
                 return "Pozycja nie została zamknięta", 400
 
@@ -135,6 +148,9 @@ def webhook():
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
         print(f"❌ Błąd: {e}")
         return "Order error", 500
+
+    finally:
+        processing = False
 
 if __name__ == "__main__":
     print("Bot uruchomiony...")
