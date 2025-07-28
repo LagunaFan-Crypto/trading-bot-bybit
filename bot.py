@@ -46,7 +46,7 @@ def calculate_qty(symbol):
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 0.2
+        trade_usdt = available_usdt * 1
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
@@ -81,6 +81,14 @@ def webhook():
 
         position_size, position_side = get_current_position(SYMBOL)
 
+        if position_size > 0 and position_side == "Buy" and action == "buy":
+            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (BUY), nie składam nowego zlecenia.")
+            return "Pozycja BUY już otwarta", 200
+
+        if position_size > 0 and position_side == "Sell" and action == "sell":
+            send_to_discord("⚠️ Pozycja już otwarta w odpowiednim kierunku (SELL), nie składam nowego zlecenia.")
+            return "Pozycja SELL już otwarta", 200
+
         if position_size > 0 and (
             (position_side == "Buy" and action == "sell") or
             (position_side == "Sell" and action == "buy")
@@ -97,7 +105,7 @@ def webhook():
             )
             send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
 
-            time.sleep(1.5)
+            time.sleep(2)
             position_size, position_side = get_current_position(SYMBOL)
 
             if position_size > 0:
