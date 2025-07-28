@@ -15,6 +15,8 @@ session = HTTP(
 )
 
 processing = False
+last_alert_time = 0
+ALERT_COOLDOWN = 5  # sekundy
 
 def send_to_discord(message):
     try:
@@ -68,12 +70,20 @@ def index():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    global processing
+    global processing, last_alert_time
+
+    current_time = time.time()
+    if current_time - last_alert_time < ALERT_COOLDOWN:
+        send_to_discord("⏳ Odrzucono alert — za szybko po poprzednim.")
+        return "Too soon", 429
+
     if processing:
         send_to_discord("⏳ Bot już przetwarza poprzedni alert. Pomijam.")
         return "Processing in progress", 429
 
     processing = True
+    last_alert_time = current_time
+
     try:
         data = request.get_json()
         print(f"🔔 Otrzymano webhook: {data}")
