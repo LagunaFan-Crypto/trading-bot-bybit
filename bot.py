@@ -16,7 +16,7 @@ session = HTTP(
 
 processing = False
 last_alert_time = 0
-ALERT_COOLDOWN = 5  # sekundy
+ALERT_COOLDOWN = 3  # sekundy
 
 def send_to_discord(message):
     try:
@@ -31,8 +31,6 @@ def get_current_position(symbol):
         position = result["result"]["list"][0]
         size = float(position["size"])
         side = position["side"]
-        print(f"🔄 Pozycja: {side} o rozmiarze {size}")
-
         return size, side
     except Exception as e:
         send_to_discord(f"⚠️ Błąd pobierania pozycji: {e}")
@@ -40,24 +38,21 @@ def get_current_position(symbol):
 
 def calculate_qty(symbol):
     try:
-        send_to_discord("🔍 Rozpoczynam obliczanie ilości...")
-
+        send_to_discord("🔍 Obliczanie wielkości zlecenia...")
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
         balance_info = balance_data["result"]["list"][0]["coin"]
         usdt = next(c for c in balance_info if c["coin"] == "USDT")
         available_usdt = float(usdt.get("walletBalance", 0))
-        trade_usdt = available_usdt * 1
+        trade_usdt = available_usdt * 0.2
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((item for item in tickers_data["result"]["list"] if item["symbol"] == symbol), None)
-
         if not price_info:
-            send_to_discord(f"⚠️ Symbol {symbol} nie został znaleziony.")
+            send_to_discord(f"⚠️ Symbol {symbol} nie znaleziony.")
             return None
 
         last_price = float(price_info["lastPrice"])
         qty = int(trade_usdt / last_price)
-
         send_to_discord(f"✅ Obliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
         return qty
     except Exception as e:
@@ -86,7 +81,7 @@ def webhook():
 
     try:
         data = request.get_json()
-        print(f"🔔 Otrzymano webhook: {data}")
+        print(f"🔔 Webhook: {data}")
         action = data.get("action", "").lower()
 
         if action not in ["buy", "sell"]:
@@ -96,57 +91,54 @@ def webhook():
 
         position_size, position_side = get_current_position(SYMBOL)
 
-        # Odwracamy stronę działania z alertu do zamknięcia aktualnej pozycji
-        if position_size > 0:
+        # Jeśli otwarta pozycja istnieje — zamykamy ją
+        if position_size > 0.0001:
             close_side = "Sell" if position_side == "Buy" else "Buy"
-            if (action == "buy" and position_side == "Sell") or (action == "sell" and position_side == "Buy"):
-                try:
-                    session.place_order(
-                        category="linear",
-                        symbol=SYMBOL,
-                        side=close_side,
-                        orderType="Market",
-                        qty=position_size,
-                        reduceOnly=True,
-                        timeInForce="GoodTillCancel"
-                    )
-                    send_to_discord(f"🔒 Zamknięcie pozycji {position_side.upper()} ({position_size} {SYMBOL})")
-                except Exception as e:
-                    send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
-
-                time.sleep(3)
-                position_size, position_side = get_current_position(SYMBOL)
-
-        # Składamy nowe zlecenie jeśli nie ma aktywnej pozycji
-        if position_size < 0.0001:
-            qty = calculate_qty(SYMBOL)
-            if qty is None or qty == 0:
-                send_to_discord("⚠️ Ilość nieprawidłowa, przerywam operację.")
-                processing = False
-                return "Invalid qty", 400
-
-            order_side = "Buy" if action == "buy" else "Sell"
             try:
                 session.place_order(
                     category="linear",
                     symbol=SYMBOL,
-                    side=order_side,
+                    side=close_side,
+                    orderType="Market",
+                    qty=position_size,
+                    reduceOnly=True,
+                    timeInForce="GoodTillCancel"
+                )
+                send_to_discord(f"🔒 Zamknięcie pozycji {position_side} ({position_size} {SYMBOL})")
+                time.sleep(1.5)
+            except Exception as e:
+                send_to_discord(f"⚠️ Błąd zamykania pozycji: {e}")
+
+        # Po zamknięciu lub braku pozycji, składamy nowe zlecenie
+        position_size, _ = get_current_position(SYMBOL)
+        if position_size < 0.0001:
+            qty = calculate_qty(SYMBOL)
+            if qty is None or qty == 0:
+                send_to_discord("⚠️ Pozycja zbyt mała. Przerywam dalsze działania.")
+                processing = False
+                return "Invalid qty", 400
+
+            try:
+                side = "Buy" if action == "buy" else "Sell"
+                session.place_order(
+                    category="linear",
+                    symbol=SYMBOL,
+                    side=side,
                     orderType="Market",
                     qty=qty,
                     timeInForce="GoodTillCancel"
                 )
-                send_to_discord(f"✅ Zlecenie {order_side.upper()} złożone: {qty} {SYMBOL}")
+                send_to_discord(f"✅ Zlecenie {side.upper()} złożone: {qty} {SYMBOL}")
             except Exception as e:
-                send_to_discord(f"❌ Błąd składania nowego zlecenia: {e}")
+                send_to_discord(f"❌ Błąd składania zlecenia: {e}")
 
         processing = False
         return "OK", 200
 
     except Exception as e:
         send_to_discord(f"❌ Błąd składania zlecenia: {e}")
-        print(f"❌ Błąd: {e}")
         processing = False
-        return "Order error", 500
+        return "Webhook error", 500
 
 if __name__ == "__main__":
     print("Bot uruchomiony...")
