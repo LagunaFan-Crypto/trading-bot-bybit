@@ -81,7 +81,6 @@ def webhook():
 
         position_size, position_side = get_current_position(SYMBOL)
 
-        # Zamykanie odwrotnej pozycji
         if position_size > 0 and (
             (position_side == "Buy" and action == "sell") or
             (position_side == "Sell" and action == "buy")
@@ -101,19 +100,26 @@ def webhook():
             time.sleep(1.5)
             position_size, position_side = get_current_position(SYMBOL)
 
+            if position_size > 0:
+                send_to_discord("⚠️ Pozycja nadal otwarta po próbie zamknięcia. Przerywam operację.")
+                return "Pozycja nie została zamknięta", 400
+
         if position_size == 0:
             qty = calculate_qty(SYMBOL)
-            if qty is not None and qty > 0:
-                order_side = "Buy" if action == "buy" else "Sell"
-                new_order = session.place_order(
-                    category="linear",
-                    symbol=SYMBOL,
-                    side=order_side,
-                    orderType="Market",
-                    qty=qty,
-                    timeInForce="GoodTillCancel"
-                )
-                send_to_discord(f"✅ Zlecenie {order_side.upper()} złożone: {qty} {SYMBOL}")
+            if qty is None or qty == 0:
+                send_to_discord("⚠️ Ilość nieprawidłowa, przerywam operację.")
+                return "Invalid qty", 400
+
+            order_side = "Buy" if action == "buy" else "Sell"
+            new_order = session.place_order(
+                category="linear",
+                symbol=SYMBOL,
+                side=order_side,
+                orderType="Market",
+                qty=qty,
+                timeInForce="GoodTillCancel"
+            )
+            send_to_discord(f"✅ Zlecenie {order_side.upper()} złożone: {qty} {SYMBOL}")
         else:
             send_to_discord(f"⚠️ Pozycja już otwarta w odpowiednim kierunku ({position_side.upper()}), nie składam nowego zlecenia.")
 
