@@ -91,6 +91,15 @@ def webhook():
 
         position_size, position_side = get_current_position(SYMBOL)
 
+        # Jeśli pozycja jest już otwarta w odpowiednim kierunku — zakończ przetwarzanie
+        if position_size > 0 and (
+            (action == "buy" and position_side == "Buy") or
+            (action == "sell" and position_side == "Sell")
+        ):
+            send_to_discord(f"⚠️ Pozycja już otwarta w odpowiednim kierunku ({position_side.upper()}), nie składam nowego zlecenia.")
+            processing = False
+            return "Position already open", 200
+
         # Jeśli otwarta pozycja istnieje — zamykamy ją
         if position_size > 0.0001:
             close_side = "Sell" if position_side == "Buy" else "Buy"
