@@ -90,6 +90,37 @@ def calculate_qty(symbol: str):
         send_to_discord(f"❗ Błąd podczas obliczania ilości: {e}")
         return None
 
+# ---------- SL / TRADING-STOP na Bybit ---------- # <<< NEW
+def set_stop_loss(symbol: str, side: str, sl_price: float | None):
+    """
+    Ustawia lub kasuje SL dla bieżącej pozycji.
+    - sl_price > 0 -> ustaw SL na tej cenie
+    - sl_price is None lub <= 0 -> kasuj SL
+    """
+    try:
+        # positionIdx: 1 = Buy (long), 2 = Sell (short) w trybie ONEWAY
+        idx = 1 if (side or "").lower().startswith("b") else 2
+        payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "positionIdx": idx,
+            "slOrderType": "Market",   # wyjście market po trafieniu SL
+            "slTriggerBy": "LastPrice" # opcjonalnie: "MarkPrice"
+        }
+        if sl_price and sl_price > 0:
+            payload["stopLoss"] = str(sl_price)
+            send_to_discord(f"🛡️ Ustawiam SL {side.upper()} @ {sl_price} na {symbol}")
+        else:
+            payload["stopLoss"] = "0"  # 0 = wyczyść SL wg Bybit v5
+            send_to_discord(f"🧹 Kasuję SL dla {side.upper()} na {symbol}")
+
+        session.set_trading_stop(**payload)
+        return True
+    except Exception as e:
+        send_to_discord(f"❗ Błąd set_trading_stop: {e}")
+        return False
+# ----------------------------------------------- # <<< NEW
+
 # ====================== ROUTES ======================
 @app.get("/")
 def index():
@@ -107,27 +138,50 @@ def webhook():
     try:
         data = parse_incoming_json()
         if not isinstance(data, dict):
-            send_to_discord("⚠️ Webhook bez poprawnego JSON. Upewnij się, że w 'Wiadomość' jest {{strategy.order.alert_message}}.")
+            send_to_discord("⚠️ Webhook bez poprawnego JSON. Upewnij się, że w 'Wiadomość' jest {{strategy.order.alert_message}} lub poprawny JSON.")
             processing = False
             return "Invalid JSON", 415
 
         action = str(data.get("action", "")).lower().strip()
         symbol = str(data.get("symbol", SYMBOL)).upper().strip() or SYMBOL
+        sl_val = data.get("sl")  # może być number lub string lub None
+        try:
+            sl_price = float(sl_val) if sl_val is not None and sl_val != "" else None
+        except Exception:
+            sl_price = None
 
-        if action not in ("buy", "sell"):
-            send_to_discord(f"⚠️ Nieprawidłowe polecenie: '{action}'. Dozwolone: 'buy' lub 'sell'.")
+        # Akcje obsługiwane przez bota  # <<< NEW
+        # buy/sell -> otwórz pozycję (i ustaw SL jeśli podany)
+        # update_sl -> przesuń istniejący SL
+        # clear_sl  -> skasuj SL
+        if action not in ("buy", "sell", "update_sl", "clear_sl"):
+            send_to_discord(f"⚠️ Nieprawidłowe polecenie: '{action}'. Dozwolone: buy/sell/update_sl/clear_sl.")
             processing = False
             return "Invalid action", 400
 
-        # Aktualna pozycja
+        # ------ UPDATE/CLEAR SL bez zmian pozycji ------ # <<< NEW
+        if action in ("update_sl", "clear_sl"):
+            size, side = get_current_position(symbol)
+            if size <= 0:
+                send_to_discord("ℹ️ Brak otwartej pozycji — pomijam zmianę SL.")
+            else:
+                target_sl = None if action == "clear_sl" else sl_price
+                set_stop_loss(symbol, side, target_sl)
+            processing = False
+            return jsonify(ok=True, msg="SL updated"), 200
+        # ------------------------------------------------
+
+        # ------ BUY/SELL ------ (Twoja dotychczasowa logika)
         position_size, position_side = get_current_position(symbol)
 
-        # Jeśli już w dobrym kierunku — nic nie rób
+        # Jeśli już w dobrym kierunku — nic nie rób, ale zaktualizuj SL jeśli przyszedł
         if position_size > 0 and (
             (action == "buy" and position_side == "Buy") or
             (action == "sell" and position_side == "Sell")
         ):
-            send_to_discord(f"ℹ️ Pozycja już otwarta w kierunku {position_side.upper()} — brak akcji.")
+            send_to_discord(f"ℹ️ Pozycja już otwarta w kierunku {position_side.upper()} — brak wejścia.")
+            if sl_price is not None:
+                set_stop_loss(symbol, position_side, sl_price)  # <<< NEW
             processing = False
             return jsonify(ok=True, msg="Position already open"), 200
 
@@ -169,6 +223,11 @@ def webhook():
                     timeInForce="GoodTillCancel"
                 )
                 send_to_discord(f"📥 Otwarto pozycję {side.upper()} ({qty} {symbol})")
+                time.sleep(0.8)  # krótka pauza aż pozycja „pojawi się” po stronie Bybit
+
+                # Ustaw SL jeśli przyszedł w JSON-ie
+                if sl_price is not None:
+                    set_stop_loss(symbol, side, sl_price)  # <<< NEW
             except Exception as e:
                 send_to_discord(f"❗ Błąd przy składaniu zlecenia: {e}")
 
