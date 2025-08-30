@@ -70,7 +70,7 @@ def calculate_qty(symbol: str):
             return None
 
         available_usdt = float(usdt.get("walletBalance", 0) or 0)
-        trade_usdt = available_usdt * 1.0  # 100% — zmień jeśli chcesz mniejszy risk
+        trade_usdt = available_usdt * 1.0  # 100% — możesz zmniejszyć ryzyko
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((it for it in tickers_data["result"]["list"] if it.get("symbol") == symbol), None)
@@ -84,13 +84,17 @@ def calculate_qty(symbol: str):
             return None
 
         qty = int(trade_usdt / last_price)
+        if qty < 1:
+            send_to_discord("❗ Wyliczona ilość < 1, nie złożę zlecenia.")
+            return None
+
         send_to_discord(f"✅ Ilość do zlecenia: {qty} {symbol} przy cenie {last_price} USDT")
         return qty
     except Exception as e:
         send_to_discord(f"❗ Błąd podczas obliczania ilości: {e}")
         return None
 
-# ---------- SL / TRADING-STOP na Bybit ---------- # <<< NEW
+# ---------- SL / TRADING-STOP na Bybit ----------
 def set_stop_loss(symbol: str, side: str, sl_price: float | None):
     """
     Ustawia lub kasuje SL dla bieżącej pozycji.
@@ -104,8 +108,8 @@ def set_stop_loss(symbol: str, side: str, sl_price: float | None):
             "category": "linear",
             "symbol": symbol,
             "positionIdx": idx,
-            "slOrderType": "Market",   # wyjście market po trafieniu SL
-            "slTriggerBy": "LastPrice" # opcjonalnie: "MarkPrice"
+            "slOrderType": "Market",
+            "slTriggerBy": "LastPrice"
         }
         if sl_price and sl_price > 0:
             payload["stopLoss"] = str(sl_price)
@@ -119,7 +123,6 @@ def set_stop_loss(symbol: str, side: str, sl_price: float | None):
     except Exception as e:
         send_to_discord(f"❗ Błąd set_trading_stop: {e}")
         return False
-# ----------------------------------------------- # <<< NEW
 
 # ====================== ROUTES ======================
 @app.get("/")
@@ -144,22 +147,19 @@ def webhook():
 
         action = str(data.get("action", "")).lower().strip()
         symbol = str(data.get("symbol", SYMBOL)).upper().strip() or SYMBOL
-        sl_val = data.get("sl")  # może być number lub string lub None
+        sl_val = data.get("sl")  # number / string / None
         try:
             sl_price = float(sl_val) if sl_val is not None and sl_val != "" else None
         except Exception:
             sl_price = None
 
-        # Akcje obsługiwane przez bota  # <<< NEW
-        # buy/sell -> otwórz pozycję (i ustaw SL jeśli podany)
-        # update_sl -> przesuń istniejący SL
-        # clear_sl  -> skasuj SL
-        if action not in ("buy", "sell", "update_sl", "clear_sl"):
-            send_to_discord(f"⚠️ Nieprawidłowe polecenie: '{action}'. Dozwolone: buy/sell/update_sl/clear_sl.")
+        # akcje obsługiwane
+        if action not in ("buy", "sell", "update_sl", "clear_sl", "close"):
+            send_to_discord(f"⚠️ Nieprawidłowe polecenie: '{action}'. Dozwolone: buy/sell/update_sl/clear_sl/close.")
             processing = False
             return "Invalid action", 400
 
-        # ------ UPDATE/CLEAR SL bez zmian pozycji ------ # <<< NEW
+        # ------ UPDATE/CLEAR SL ------
         if action in ("update_sl", "clear_sl"):
             size, side = get_current_position(symbol)
             if size <= 0:
@@ -169,19 +169,43 @@ def webhook():
                 set_stop_loss(symbol, side, target_sl)
             processing = False
             return jsonify(ok=True, msg="SL updated"), 200
-        # ------------------------------------------------
 
-        # ------ BUY/SELL ------ (Twoja dotychczasowa logika)
+        # ------ CLOSE: zamknij aktualną pozycję ------
+        if action == "close":
+            size, side = get_current_position(symbol)
+            if size <= 0:
+                send_to_discord("ℹ️ CLOSE: brak otwartej pozycji — pomijam.")
+            else:
+                close_side = "Sell" if side == "Buy" else "Buy"
+                try:
+                    session.place_order(
+                        category="linear",
+                        symbol=symbol,
+                        side=close_side,
+                        orderType="Market",
+                        qty=size,
+                        reduceOnly=True,
+                        timeInForce="GoodTillCancel"
+                    )
+                    send_to_discord(f"🧯 CLOSE: zamknięto pozycję {side.upper()} ({size} {symbol})")
+                    # opcjonalnie: wyczyść SL po zamknięciu
+                    set_stop_loss(symbol, side, None)
+                except Exception as e:
+                    send_to_discord(f"❗ Błąd przy CLOSE: {e}")
+            processing = False
+            return jsonify(ok=True, msg="Closed"), 200
+
+        # ------ BUY/SELL ------
         position_size, position_side = get_current_position(symbol)
 
-        # Jeśli już w dobrym kierunku — nic nie rób, ale zaktualizuj SL jeśli przyszedł
+        # Jeśli już w dobrym kierunku — nie otwieraj ponownie, ale zaktualizuj SL jeśli przyszedł
         if position_size > 0 and (
             (action == "buy" and position_side == "Buy") or
             (action == "sell" and position_side == "Sell")
         ):
             send_to_discord(f"ℹ️ Pozycja już otwarta w kierunku {position_side.upper()} — brak wejścia.")
             if sl_price is not None:
-                set_stop_loss(symbol, position_side, sl_price)  # <<< NEW
+                set_stop_loss(symbol, position_side, sl_price)
             processing = False
             return jsonify(ok=True, msg="Position already open"), 200
 
@@ -223,11 +247,11 @@ def webhook():
                     timeInForce="GoodTillCancel"
                 )
                 send_to_discord(f"📥 Otwarto pozycję {side.upper()} ({qty} {symbol})")
-                time.sleep(0.8)  # krótka pauza aż pozycja „pojawi się” po stronie Bybit
+                time.sleep(0.8)
 
                 # Ustaw SL jeśli przyszedł w JSON-ie
                 if sl_price is not None:
-                    set_stop_loss(symbol, side, sl_price)  # <<< NEW
+                    set_stop_loss(symbol, side, sl_price)
             except Exception as e:
                 send_to_discord(f"❗ Błąd przy składaniu zlecenia: {e}")
 
