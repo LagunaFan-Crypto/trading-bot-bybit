@@ -21,6 +21,7 @@ PORT = int(os.environ.get("PORT", 5000))
 # Tryby zachowania
 RESPECT_MANUAL_SL = os.environ.get("RESPECT_MANUAL_SL", "true").lower() in ("1", "true", "yes")
 AUTO_RESUME_ON_MANUAL_REMOVE = os.environ.get("AUTO_RESUME_ON_MANUAL_REMOVE", "true").lower() in ("1", "true", "yes")
+IGNORE_NON_JSON = os.environ.get("IGNORE_NON_JSON", "true").lower() in ("1", "true", "yes")  # <— nowość
 
 app = Flask(__name__)
 session = HTTP(api_key=API_KEY, api_secret=API_SECRET, testnet=TESTNET)
@@ -92,8 +93,8 @@ def get_position_stop_loss(symbol: str):
 
 def calculate_qty(symbol: str):
     """
-    Bardzo proste wyliczenie ilości (100% USDT / lastPrice).
-    W razie potrzeby można rozbudować o pobranie qtyStep/minQty.
+    Proste wyliczenie ilości (100% USDT / lastPrice).
+    W razie potrzeby rozbuduj o qtyStep/minQty/tickSize.
     """
     try:
         send_to_discord("📊 Obliczam wielkość nowej pozycji…")
@@ -148,7 +149,7 @@ def set_stop_loss(symbol: str, side: str, sl_price: float | None):
             "symbol": symbol,
             "positionIdx": idx,
             "slTriggerBy": "LastPrice",
-            "tpslMode": "Full",   # v5: wymagane, gdy podajesz tp/sl
+            "tpslMode": "Full",   # v5: wymagane przy tp/sl
         }
 
         if sl_price and sl_price > 0:
@@ -178,16 +179,25 @@ def webhook():
     global processing, last_close_ts, manual_sl_locked, last_sl_value, last_sl_set_ts
 
     if processing:
-        send_to_discord("⏳ Poprzedni alert nadal przetwarzany. Pomijam ten.")
+        # ciche pominięcie duplikatu żądania
         return "Processing in progress", 429
 
     processing = True
     try:
         data = parse_incoming_json()
         if not isinstance(data, dict):
-            send_to_discord("⚠️ Webhook bez poprawnego JSON. W 'Wiadomość' użyj {{strategy.order.alert_message}} lub podaj poprawny JSON.")
+            # cicho ignoruj „nie-JSON-owe” webhooki, by mieć czyste alerty
+            if IGNORE_NON_JSON:
+                processing = False
+                return ("", 204)  # No Content
+            # lub – jeśli chcesz jednak widzieć ostrzeżenie – odkomentuj 2 linie poniżej:
+            # send_to_discord("⚠️ Webhook bez poprawnego JSON. Użyj {{strategy.order.alert_message}} lub podaj poprawny JSON.")
+            # processing = False; return "Invalid JSON", 415
+
+        # jeśli JSON był niepoprawny i IGNORE_NON_JSON=False, data będzie None
+        if not isinstance(data, dict):
             processing = False
-            return "Invalid JSON", 415
+            return "Ignored non-JSON", 204
 
         action = str(data.get("action", "")).lower().strip()
         symbol = str(data.get("symbol", SYMBOL)).upper().strip() or SYMBOL
@@ -199,9 +209,9 @@ def webhook():
 
         allowed = ("buy", "sell", "update_sl", "clear_sl", "close", "unlock_sl", "force_update_sl")
         if action not in allowed:
-            send_to_discord(f"⚠️ Nieprawidłowe polecenie: '{action}'. Dozwolone: {', '.join(allowed)}.")
+            # ciche pominięcie nieznanej akcji (żeby nie brudzić Discorda)
             processing = False
-            return "Invalid action", 400
+            return ("", 204)
 
         # ===== Akcje sterujące LOCK-iem =====
         if action == "unlock_sl":
@@ -228,9 +238,9 @@ def webhook():
                 # Brak pozycji -> wyczyść pamięć i lock
                 last_sl_value = None
                 manual_sl_locked = False
-                send_to_discord("ℹ️ Brak otwartej pozycji — pomijam zmianę SL.")
+                # czysto: nie spamuj, tylko 204
                 processing = False
-                return jsonify(ok=True, msg="No position"), 200
+                return ("", 204)
 
             # Szanuj ręczny SL?
             if RESPECT_MANUAL_SL:
@@ -257,7 +267,8 @@ def webhook():
                     manual_sl_locked = True
 
                 if manual_sl_locked:
-                    send_to_discord(f"🔒 Wykryto ręczny SL ({current_sl}); nie aktualizuję (LOCK).")
+                    # trzymajmy to w logu, ale bez zbędnych ostrzeżeń
+                    send_to_discord(f"🔒 Wykryto ręczny SL; nie aktualizuję (LOCK).")
                     processing = False
                     return jsonify(ok=True, msg="Manual SL lock"), 200
 
@@ -267,7 +278,7 @@ def webhook():
             processing = False
             return jsonify(ok=True, msg="SL updated"), 200
 
-        # ===== Zamknięcie pozycji (MA-cross z Twojej strategii) =====
+        # ===== Zamknięcie pozycji (MA-cross z Twojej strategii / Trail exit) =====
         if action == "close":
             # Dedup (w razie zdublowanych alertów z TV)
             now = time.time()
@@ -278,7 +289,9 @@ def webhook():
 
             size, side = get_current_position(symbol)
             if size <= 0:
-                send_to_discord("ℹ️ CLOSE: brak otwartej pozycji — pomijam.")
+                # cicho kończymy — pozycja już zamknięta
+                processing = False
+                return ("", 204)
             else:
                 close_side = "Sell" if side == "Buy" else "Buy"
                 try:
@@ -309,7 +322,6 @@ def webhook():
             (action == "buy" and position_side == "Buy") or
             (action == "sell" and position_side == "Sell")
         ):
-            send_to_discord(f"ℹ️ Pozycja już otwarta w kierunku {position_side.upper()} — brak wejścia.")
             if sl_price is not None:
                 if RESPECT_MANUAL_SL and manual_sl_locked:
                     send_to_discord("🔒 LOCK aktywny — pomijam update SL przy istniejącej pozycji.")
@@ -339,13 +351,12 @@ def webhook():
         # Otwórz nową pozycję, jeśli nic nie ma
         position_size, _ = get_current_position(symbol)
         if position_size < 0.0001:
-            # Nowy trade startuje "na czysto" — zdejmij lock, bo zaczynamy od zera
+            # Nowy trade startuje "na czysto" — zdejmij lock
             manual_sl_locked = False
             last_sl_value = None
 
             qty = calculate_qty(symbol)
             if not qty:
-                send_to_discord("⚠️ Zbyt mała ilość do otwarcia pozycji. Anuluję.")
                 processing = False
                 return "Invalid qty", 400
 
@@ -362,7 +373,6 @@ def webhook():
                 send_to_discord(f"📥 Otwarto pozycję {side.upper()} ({qty} {symbol})")
                 time.sleep(0.8)
 
-                # Ustaw SL, jeśli przyszedł w JSON — inicjalny SL dla nowej pozycji
                 if sl_price is not None:
                     set_stop_loss(symbol, side, sl_price)
             except Exception as e:
