@@ -18,8 +18,9 @@ except Exception:
 
 PORT = int(os.environ.get("PORT", 5000))
 
-# Szacunek dla ręcznego SL (lock, gdy wykryjemy manualną zmianę)
+# Tryby zachowania
 RESPECT_MANUAL_SL = os.environ.get("RESPECT_MANUAL_SL", "true").lower() in ("1", "true", "yes")
+AUTO_RESUME_ON_MANUAL_REMOVE = os.environ.get("AUTO_RESUME_ON_MANUAL_REMOVE", "true").lower() in ("1", "true", "yes")
 
 app = Flask(__name__)
 session = HTTP(api_key=API_KEY, api_secret=API_SECRET, testnet=TESTNET)
@@ -147,8 +148,7 @@ def set_stop_loss(symbol: str, side: str, sl_price: float | None):
             "symbol": symbol,
             "positionIdx": idx,
             "slTriggerBy": "LastPrice",
-            "tpslMode": "Full",   # wymagane w v5, gdy podajesz parametry tp/sl
-            # slOrderType pomijamy (domyślnie Market); Bybit zgłasza błąd, gdy jest bez tpslMode
+            "tpslMode": "Full",   # v5: wymagane, gdy podajesz tp/sl
         }
 
         if sl_price and sl_price > 0:
@@ -225,7 +225,7 @@ def webhook():
         if action in ("update_sl", "clear_sl"):
             size, side = get_current_position(symbol)
             if size <= 0:
-                # Brak pozycji -> zeruj pamięć SL/lock (nowy trade zacznie „na czysto”)
+                # Brak pozycji -> wyczyść pamięć i lock
                 last_sl_value = None
                 manual_sl_locked = False
                 send_to_discord("ℹ️ Brak otwartej pozycji — pomijam zmianę SL.")
@@ -238,6 +238,21 @@ def webhook():
                 recently_set = (time.time() - last_sl_set_ts) < 3.0  # okno anty-echo
                 manually_changed = (current_sl != last_sl_value) and not recently_set
 
+                # 🌟 PRZYPADEK SPECJALNY: ręcznie usunięto SL, a my dostaliśmy update_sl -> wracamy do auto
+                if (
+                    action == "update_sl" and
+                    AUTO_RESUME_ON_MANUAL_REMOVE and
+                    manually_changed and
+                    current_sl is None and      # na giełdzie brak SL
+                    sl_price is not None        # mamy nową cenę od strategii
+                ):
+                    manual_sl_locked = False
+                    send_to_discord("♻️ Ręcznie usunięto SL — wznawiam tryb automatyczny i ustawiam nowy SL.")
+                    set_stop_loss(symbol, side, sl_price)
+                    processing = False
+                    return jsonify(ok=True, msg="Auto-resumed after manual remove"), 200
+
+                # Jeśli zmiana ręczna inna niż „usunięcie” (np. przesunięcie) -> LOCK
                 if manually_changed:
                     manual_sl_locked = True
 
@@ -246,6 +261,7 @@ def webhook():
                     processing = False
                     return jsonify(ok=True, msg="Manual SL lock"), 200
 
+            # Standardowa ścieżka (gdy brak LOCK-a albo RESPECT_MANUAL_SL = false)
             target_sl = None if action == "clear_sl" else sl_price
             set_stop_loss(symbol, side, target_sl)
             processing = False
@@ -346,8 +362,7 @@ def webhook():
                 send_to_discord(f"📥 Otwarto pozycję {side.upper()} ({qty} {symbol})")
                 time.sleep(0.8)
 
-                # Ustaw SL, jeśli przyszedł w JSON — to jest OK także przy RESPECT_MANUAL_SL,
-                # bo to inicjalny SL dla nowej pozycji (nie nadpisujemy nic ręcznego).
+                # Ustaw SL, jeśli przyszedł w JSON — inicjalny SL dla nowej pozycji
                 if sl_price is not None:
                     set_stop_loss(symbol, side, sl_price)
             except Exception as e:
