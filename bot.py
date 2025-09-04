@@ -131,43 +131,75 @@ def calculate_qty(symbol: str):
         return None
 
 # ---------- SL / TRADING-STOP na Bybit ----------
-def set_stop_loss(symbol: str, side: str, sl_price: float | None):
+def _isclose_num(a: float, b: float) -> bool:
+    try:
+        return math.isclose(float(a), float(b), rel_tol=1e-10, abs_tol=0.0)
+    except Exception:
+        return str(a) == str(b)
+
+def set_stop_loss_safe(symbol: str, side: str, sl_price: float | None):
     """
-    Ustawia lub kasuje SL dla bieżącej pozycji.
-    - sl_price > 0 -> ustaw SL (tpslMode=Full, slTriggerBy=LastPrice)
-    - sl_price is None lub <= 0 -> kasuj SL ('0')
-    Zapamiętuje ostatni ustawiony SL (do detekcji manualnych zmian).
+    Ustawia/kasuje SL **bez 34040**:
+    - Pomija wywołanie, jeśli pozycja nie istnieje (size=0).
+    - Przy ustawianiu sprawdza, czy wartość SL faktycznie się zmienia.
+    - Przy kasowaniu sprawdza, czy SL w ogóle jest ustawiony.
+    Aktualizuje pamięć last_sl_value/last_sl_set_ts tylko jeśli faktycznie wysłano zmianę.
     """
     global last_sl_value, last_sl_set_ts
 
     try:
         current_sl, idx_from_pos = get_position_stop_loss(symbol)
-        idx = idx_from_pos  # preferuj positionIdx z giełdy (0=oneway)
+        # Sprawdź, czy mamy pozycję
+        size, _ = get_current_position(symbol)
+        if size <= 0:
+            # brak pozycji -> brak sensu dzwonić do /trading-stop
+            return {"skipped": "no position"}
 
         payload = {
             "category": "linear",
             "symbol": symbol,
-            "positionIdx": idx,
+            "positionIdx": idx_from_pos,
             "slTriggerBy": "LastPrice",
-            "tpslMode": "Full",   # v5: wymagane przy tp/sl
+            "tpslMode": "Full",
         }
 
+        # Ustawienie SL
         if sl_price and sl_price > 0:
+            if current_sl is not None and _isclose_num(current_sl, sl_price):
+                # nic do zmiany
+                return {"skipped": "not modified (same value)"}
             payload["stopLoss"] = str(sl_price)
-            session.set_trading_stop(**payload)
-            last_sl_value = float(sl_price)
-            last_sl_set_ts = time.time()
-            send_to_discord(f"🛡️ Ustawiam SL {side.upper()} @ {sl_price} na {symbol}")
+            try:
+                session.set_trading_stop(**payload)
+                last_sl_value = float(sl_price)
+                last_sl_set_ts = time.time()
+                send_to_discord(f"🛡️ Ustawiam SL {side.upper()} @ {sl_price} na {symbol}")
+                return {"ok": True}
+            except Exception as e:
+                # Jeśli mimo wszystko Bybit zwróci 34040, traktuj jako pominięcie
+                if "34040" in str(e).lower() or "not modified" in str(e).lower():
+                    return {"skipped": "api not modified"}
+                raise
+
+        # Kasowanie SL
         else:
-            payload["stopLoss"] = "0"  # 0 = wyczyść SL
-            session.set_trading_stop(**payload)
-            last_sl_value = None
-            last_sl_set_ts = time.time()
-            send_to_discord(f"🧹 Kasuję SL dla {side.upper()} na {symbol}")
-        return True
+            if current_sl is None:
+                return {"skipped": "not modified (already cleared)"}
+            payload["stopLoss"] = "0"
+            try:
+                session.set_trading_stop(**payload)
+                last_sl_value = None
+                last_sl_set_ts = time.time()
+                send_to_discord(f"🧹 Kasuję SL dla {side.upper()} na {symbol}")
+                return {"ok": True}
+            except Exception as e:
+                if "34040" in str(e).lower() or "not modified" in str(e).lower():
+                    return {"skipped": "api not modified"}
+                raise
+
     except Exception as e:
         send_to_discord(f"❗ Błąd set_trading_stop: {e}")
-        return False
+        return {"error": str(e)}
 
 # ====================== ROUTES ======================
 @app.get("/")
@@ -190,11 +222,6 @@ def webhook():
             if IGNORE_NON_JSON:
                 processing = False
                 return ("", 204)  # No Content
-            # lub – jeśli chcesz jednak widzieć ostrzeżenie – odkomentuj 2 linie poniżej:
-            # send_to_discord("⚠️ Webhook bez poprawnego JSON. Użyj {{strategy.order.alert_message}} lub podaj poprawny JSON.")
-            # processing = False; return "Invalid JSON", 415
-
-        # jeśli JSON był niepoprawny i IGNORE_NON_JSON=False, data będzie None
         if not isinstance(data, dict):
             processing = False
             return "Ignored non-JSON", 204
@@ -209,7 +236,6 @@ def webhook():
 
         allowed = ("buy", "sell", "update_sl", "clear_sl", "close", "unlock_sl", "force_update_sl")
         if action not in allowed:
-            # ciche pominięcie nieznanej akcji (żeby nie brudzić Discorda)
             processing = False
             return ("", 204)
 
@@ -223,7 +249,7 @@ def webhook():
         if action == "force_update_sl":
             size, side = get_current_position(symbol)
             if size > 0:
-                set_stop_loss(symbol, side, sl_price)
+                set_stop_loss_safe(symbol, side, sl_price)
                 manual_sl_locked = False
                 send_to_discord("⚠️ FORCE: zaktualizowano SL mimo locka.")
             else:
@@ -238,7 +264,6 @@ def webhook():
                 # Brak pozycji -> wyczyść pamięć i lock
                 last_sl_value = None
                 manual_sl_locked = False
-                # czysto: nie spamuj, tylko 204
                 processing = False
                 return ("", 204)
 
@@ -248,39 +273,37 @@ def webhook():
                 recently_set = (time.time() - last_sl_set_ts) < 3.0  # okno anty-echo
                 manually_changed = (current_sl != last_sl_value) and not recently_set
 
-                # 🌟 PRZYPADEK SPECJALNY: ręcznie usunięto SL, a my dostaliśmy update_sl -> wracamy do auto
+                # 🌟 Ręcznie usunięto SL -> automatycznie wróć do auto (jeśli włączone)
                 if (
                     action == "update_sl" and
                     AUTO_RESUME_ON_MANUAL_REMOVE and
                     manually_changed and
-                    current_sl is None and      # na giełdzie brak SL
-                    sl_price is not None        # mamy nową cenę od strategii
+                    current_sl is None and
+                    sl_price is not None
                 ):
                     manual_sl_locked = False
                     send_to_discord("♻️ Ręcznie usunięto SL — wznawiam tryb automatyczny i ustawiam nowy SL.")
-                    set_stop_loss(symbol, side, sl_price)
+                    set_stop_loss_safe(symbol, side, sl_price)
                     processing = False
                     return jsonify(ok=True, msg="Auto-resumed after manual remove"), 200
 
-                # Jeśli zmiana ręczna inna niż „usunięcie” (np. przesunięcie) -> LOCK
+                # Jeśli zmieniono ręcznie (np. przesunięcie) -> LOCK
                 if manually_changed:
                     manual_sl_locked = True
 
                 if manual_sl_locked:
-                    # trzymajmy to w logu, ale bez zbędnych ostrzeżeń
                     send_to_discord(f"🔒 Wykryto ręczny SL; nie aktualizuję (LOCK).")
                     processing = False
                     return jsonify(ok=True, msg="Manual SL lock"), 200
 
-            # Standardowa ścieżka (gdy brak LOCK-a albo RESPECT_MANUAL_SL = false)
+            # Standardowa ścieżka
             target_sl = None if action == "clear_sl" else sl_price
-            set_stop_loss(symbol, side, target_sl)
+            set_stop_loss_safe(symbol, side, target_sl)
             processing = False
             return jsonify(ok=True, msg="SL updated"), 200
 
-        # ===== Zamknięcie pozycji (MA-cross z Twojej strategii / Trail exit) =====
+        # ===== Zamknięcie pozycji =====
         if action == "close":
-            # Dedup (w razie zdublowanych alertów z TV)
             now = time.time()
             if now - last_close_ts < 1.0:
                 processing = False
@@ -289,7 +312,6 @@ def webhook():
 
             size, side = get_current_position(symbol)
             if size <= 0:
-                # cicho kończymy — pozycja już zamknięta
                 processing = False
                 return ("", 204)
             else:
@@ -305,8 +327,8 @@ def webhook():
                         timeInForce="GoodTillCancel"
                     )
                     send_to_discord(f"🧯 CLOSE: zamknięto pozycję {side.upper()} ({size} {symbol})")
-                    # Po zamknięciu wyczyść SL i stan locka
-                    set_stop_loss(symbol, side, None)
+                    # Po zamknięciu: bezpiecznie „wyczyść” (funkcja sama pominie, gdy brak pozycji/SL)
+                    set_stop_loss_safe(symbol, side, None)
                     manual_sl_locked = False
                     last_sl_value = None
                 except Exception as e:
@@ -317,7 +339,7 @@ def webhook():
         # ===== BUY / SELL =====
         position_size, position_side = get_current_position(symbol)
 
-        # Jeśli już w prawidłowym kierunku — nic nie rób, ewentualnie zaktualizuj SL (chyba że lock)
+        # Jeśli już w prawidłowym kierunku — nic nie rób, ewentualnie SL (o ile brak LOCKa)
         if position_size > 0 and (
             (action == "buy" and position_side == "Buy") or
             (action == "sell" and position_side == "Sell")
@@ -326,7 +348,7 @@ def webhook():
                 if RESPECT_MANUAL_SL and manual_sl_locked:
                     send_to_discord("🔒 LOCK aktywny — pomijam update SL przy istniejącej pozycji.")
                 else:
-                    set_stop_loss(symbol, position_side, sl_price)
+                    set_stop_loss_safe(symbol, position_side, sl_price)
             processing = False
             return jsonify(ok=True, msg="Position already open"), 200
 
@@ -374,7 +396,7 @@ def webhook():
                 time.sleep(0.8)
 
                 if sl_price is not None:
-                    set_stop_loss(symbol, side, sl_price)
+                    set_stop_loss_safe(symbol, side, sl_price)
             except Exception as e:
                 send_to_discord(f"❗ Błąd przy składaniu zlecenia: {e}")
 
