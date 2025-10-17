@@ -1,5 +1,6 @@
 API_KEY = "fMqmICCnGQtafLBuKf"
 API_SECRET = "ySpYC00YLtn3dLQENrkBM0txN2xlvGK9aLlB"
-SYMBOL = "WIFUSDT"
+SYMBOL = "WIFUSDT"  # domyślny symbol
+ALLOWED_SYMBOLS = ["WIFUSDT", "COAIUSDT"]  # (możliwe symbole)
 TESTNET = False
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1392636936723763210/nf-ZLx2Tz_nlen9eDwUeeTiiLDSlVR6yRvNGILNFLLpNsOJiXJxyO5EHD5DGhqQ4U2SZ"
