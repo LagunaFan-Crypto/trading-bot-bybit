@@ -8,13 +8,20 @@ from pybit.unified_trading import HTTP
 
 # ====================== KONFIGURACJA ======================
 try:
-    from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET
+    # teraz importujemy też ALLOWED_SYMBOLS z config.py
+    from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET, ALLOWED_SYMBOLS
 except Exception:
     API_KEY = os.environ.get("API_KEY", "")
     API_SECRET = os.environ.get("API_SECRET", "")
     SYMBOL = os.environ.get("SYMBOL", "BTCUSDT")
     DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
     TESTNET = os.environ.get("TESTNET", "true").lower() in ("1", "true", "yes")
+    # fallback: można też podać przez ENV: ALLOWED_SYMBOLS="WIFUSDT,COAIUSDT"
+    ALLOWED_SYMBOLS = [
+        s.strip().upper()
+        for s in os.environ.get("ALLOWED_SYMBOLS", "WIFUSDT,COAIUSDT").split(",")
+        if s.strip()
+    ]
 
 PORT = int(os.environ.get("PORT", 5000))
 
@@ -58,9 +65,7 @@ def parse_incoming_json():
         return None
 
 def get_current_position(symbol: str):
-    """
-    Zwraca (size: float, side: 'Buy'|'Sell'|'None')
-    """
+    """Zwraca (size: float, side: 'Buy'|'Sell'|'None')"""
     try:
         result = session.get_positions(category="linear", symbol=symbol)
         items = (result or {}).get("result", {}).get("list", []) or []
@@ -75,9 +80,7 @@ def get_current_position(symbol: str):
         return 0.0, "None"
 
 def get_position_stop_loss(symbol: str):
-    """
-    Zwraca (current_sl: float|None, positionIdx: int)
-    """
+    """Zwraca (current_sl: float|None, positionIdx: int)"""
     try:
         res = session.get_positions(category="linear", symbol=symbol)
         items = (res or {}).get("result", {}).get("list", []) or []
@@ -92,10 +95,7 @@ def get_position_stop_loss(symbol: str):
         return None, 0
 
 def calculate_qty(symbol: str):
-    """
-    Proste wyliczenie ilości (100% USDT / lastPrice).
-    W razie potrzeby rozbuduj o qtyStep/minQty/tickSize.
-    """
+    """Proste wyliczenie ilości (100% USDT / lastPrice)."""
     try:
         send_to_discord("📊 Obliczam wielkość nowej pozycji…")
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
@@ -130,7 +130,7 @@ def calculate_qty(symbol: str):
         send_to_discord(f"❗ Błąd podczas obliczania ilości: {e}")
         return None
 
-# ---------- SL / TRADING-STOP na Bybit ----------
+# ---------- SL / TRADING-STOP ----------
 def _isclose_num(a: float, b: float) -> bool:
     try:
         return math.isclose(float(a), float(b), rel_tol=1e-10, abs_tol=0.0)
@@ -138,21 +138,12 @@ def _isclose_num(a: float, b: float) -> bool:
         return str(a) == str(b)
 
 def set_stop_loss_safe(symbol: str, side: str, sl_price: float | None):
-    """
-    Ustawia/kasuje SL **bez 34040**:
-    - Pomija wywołanie, jeśli pozycja nie istnieje (size=0).
-    - Przy ustawianiu sprawdza, czy wartość SL faktycznie się zmienia.
-    - Przy kasowaniu sprawdza, czy SL w ogóle jest ustawiony.
-    Aktualizuje pamięć last_sl_value/last_sl_set_ts tylko jeśli faktycznie wysłano zmianę.
-    """
+    """Ustawia/kasuje SL z obsługą błędu 34040."""
     global last_sl_value, last_sl_set_ts
-
     try:
         current_sl, idx_from_pos = get_position_stop_loss(symbol)
-        # Sprawdź, czy mamy pozycję
         size, _ = get_current_position(symbol)
         if size <= 0:
-            # brak pozycji -> brak sensu dzwonić do /trading-stop
             return {"skipped": "no position"}
 
         payload = {
@@ -163,39 +154,24 @@ def set_stop_loss_safe(symbol: str, side: str, sl_price: float | None):
             "tpslMode": "Full",
         }
 
-        # Ustawienie SL
         if sl_price and sl_price > 0:
             if current_sl is not None and _isclose_num(current_sl, sl_price):
-                # nic do zmiany
                 return {"skipped": "not modified (same value)"}
             payload["stopLoss"] = str(sl_price)
-            try:
-                session.set_trading_stop(**payload)
-                last_sl_value = float(sl_price)
-                last_sl_set_ts = time.time()
-                send_to_discord(f"🛡️ Ustawiam SL {side.upper()} @ {sl_price} na {symbol}")
-                return {"ok": True}
-            except Exception as e:
-                # Jeśli mimo wszystko Bybit zwróci 34040, traktuj jako pominięcie
-                if "34040" in str(e).lower() or "not modified" in str(e).lower():
-                    return {"skipped": "api not modified"}
-                raise
-
-        # Kasowanie SL
+            session.set_trading_stop(**payload)
+            last_sl_value = float(sl_price)
+            last_sl_set_ts = time.time()
+            send_to_discord(f"🛡️ Ustawiam SL {side.upper()} @ {sl_price} na {symbol}")
+            return {"ok": True}
         else:
             if current_sl is None:
                 return {"skipped": "not modified (already cleared)"}
             payload["stopLoss"] = "0"
-            try:
-                session.set_trading_stop(**payload)
-                last_sl_value = None
-                last_sl_set_ts = time.time()
-                send_to_discord(f"🧹 Kasuję SL dla {side.upper()} na {symbol}")
-                return {"ok": True}
-            except Exception as e:
-                if "34040" in str(e).lower() or "not modified" in str(e).lower():
-                    return {"skipped": "api not modified"}
-                raise
+            session.set_trading_stop(**payload)
+            last_sl_value = None
+            last_sl_set_ts = time.time()
+            send_to_discord(f"🧹 Kasuję SL dla {side.upper()} na {symbol}")
+            return {"ok": True}
 
     except Exception as e:
         send_to_discord(f"❗ Błąd set_trading_stop: {e}")
@@ -211,26 +187,31 @@ def webhook():
     global processing, last_close_ts, manual_sl_locked, last_sl_value, last_sl_set_ts
 
     if processing:
-        # ciche pominięcie duplikatu żądania
         return "Processing in progress", 429
 
     processing = True
     try:
         data = parse_incoming_json()
         if not isinstance(data, dict):
-            # cicho ignoruj „nie-JSON-owe” webhooki, by mieć czyste alerty
             if IGNORE_NON_JSON:
                 processing = False
-                return ("", 204)  # No Content
+                return ("", 204)
         if not isinstance(data, dict):
             processing = False
             return "Ignored non-JSON", 204
 
         action = str(data.get("action", "")).lower().strip()
         symbol = str(data.get("symbol", SYMBOL)).upper().strip() or SYMBOL
-        sl_val = data.get("sl")  # number / string / None
+
+        # ✅ Walidacja symbolu
+        if symbol not in ALLOWED_SYMBOLS:
+            send_to_discord(f"🚫 Odrzucono nieautoryzowany symbol: {symbol}. Dozwolone: {', '.join(ALLOWED_SYMBOLS)}")
+            processing = False
+            return jsonify(error="symbol not allowed"), 400
+
+        sl_val = data.get("sl")
         try:
-            sl_price = float(sl_val) if sl_val is not None and sl_val != "" else None
+            sl_price = float(sl_val) if sl_val not in ("", None) else None
         except Exception:
             sl_price = None
 
@@ -239,13 +220,14 @@ def webhook():
             processing = False
             return ("", 204)
 
-        # ===== Akcje sterujące LOCK-iem =====
+        # ===== UNLOCK SL =====
         if action == "unlock_sl":
             manual_sl_locked = False
             send_to_discord("🔓 Odblokowano ręczny SL (UNLOCK).")
             processing = False
-            return jsonify(ok=True, msg="SL unlocked"), 200
+            return jsonify(ok=True), 200
 
+        # ===== FORCE SL =====
         if action == "force_update_sl":
             size, side = get_current_position(symbol)
             if size > 0:
@@ -255,151 +237,80 @@ def webhook():
             else:
                 send_to_discord("ℹ️ FORCE: brak pozycji — pomijam.")
             processing = False
-            return jsonify(ok=True, msg="SL forced"), 200
+            return jsonify(ok=True), 200
 
         # ===== Aktualizacja/kasowanie SL =====
         if action in ("update_sl", "clear_sl"):
             size, side = get_current_position(symbol)
             if size <= 0:
-                # Brak pozycji -> wyczyść pamięć i lock
                 last_sl_value = None
                 manual_sl_locked = False
                 processing = False
                 return ("", 204)
-
-            # Szanuj ręczny SL?
-            if RESPECT_MANUAL_SL:
-                current_sl, _ = get_position_stop_loss(symbol)
-                recently_set = (time.time() - last_sl_set_ts) < 3.0  # okno anty-echo
-                manually_changed = (current_sl != last_sl_value) and not recently_set
-
-                # 🌟 Ręcznie usunięto SL -> automatycznie wróć do auto (jeśli włączone)
-                if (
-                    action == "update_sl" and
-                    AUTO_RESUME_ON_MANUAL_REMOVE and
-                    manually_changed and
-                    current_sl is None and
-                    sl_price is not None
-                ):
-                    manual_sl_locked = False
-                    send_to_discord("♻️ Ręcznie usunięto SL — wznawiam tryb automatyczny i ustawiam nowy SL.")
-                    set_stop_loss_safe(symbol, side, sl_price)
-                    processing = False
-                    return jsonify(ok=True, msg="Auto-resumed after manual remove"), 200
-
-                # Jeśli zmieniono ręcznie (np. przesunięcie) -> LOCK
-                if manually_changed:
-                    manual_sl_locked = True
-
-                if manual_sl_locked:
-                    send_to_discord(f"🔒 Wykryto ręczny SL; nie aktualizuję (LOCK).")
-                    processing = False
-                    return jsonify(ok=True, msg="Manual SL lock"), 200
-
-            # Standardowa ścieżka
             target_sl = None if action == "clear_sl" else sl_price
             set_stop_loss_safe(symbol, side, target_sl)
             processing = False
-            return jsonify(ok=True, msg="SL updated"), 200
+            return jsonify(ok=True), 200
 
         # ===== Zamknięcie pozycji =====
         if action == "close":
             now = time.time()
             if now - last_close_ts < 1.0:
                 processing = False
-                return jsonify(ok=True, msg="Dedup close"), 200
+                return jsonify(ok=True), 200
             last_close_ts = now
-
             size, side = get_current_position(symbol)
             if size <= 0:
                 processing = False
                 return ("", 204)
-            else:
-                close_side = "Sell" if side == "Buy" else "Buy"
-                try:
-                    session.place_order(
-                        category="linear",
-                        symbol=symbol,
-                        side=close_side,
-                        orderType="Market",
-                        qty=size,
-                        reduceOnly=True,
-                        timeInForce="GoodTillCancel"
-                    )
-                    send_to_discord(f"🧯 CLOSE: zamknięto pozycję {side.upper()} ({size} {symbol})")
-                    # Po zamknięciu: bezpiecznie „wyczyść” (funkcja sama pominie, gdy brak pozycji/SL)
-                    set_stop_loss_safe(symbol, side, None)
-                    manual_sl_locked = False
-                    last_sl_value = None
-                except Exception as e:
-                    send_to_discord(f"❗ Błąd przy CLOSE: {e}")
+            close_side = "Sell" if side == "Buy" else "Buy"
+            session.place_order(category="linear", symbol=symbol, side=close_side,
+                                orderType="Market", qty=size, reduceOnly=True,
+                                timeInForce="GoodTillCancel")
+            send_to_discord(f"🧯 CLOSE: zamknięto pozycję {side.upper()} ({size} {symbol})")
+            set_stop_loss_safe(symbol, side, None)
+            manual_sl_locked = False
+            last_sl_value = None
             processing = False
-            return jsonify(ok=True, msg="Closed"), 200
+            return jsonify(ok=True), 200
 
         # ===== BUY / SELL =====
         position_size, position_side = get_current_position(symbol)
 
-        # Jeśli już w prawidłowym kierunku — nic nie rób, ewentualnie SL (o ile brak LOCKa)
         if position_size > 0 and (
-            (action == "buy" and position_side == "Buy") or
-            (action == "sell" and position_side == "Sell")
+            (action == "buy" and position_side == "Buy")
+            or (action == "sell" and position_side == "Sell")
         ):
             if sl_price is not None:
-                if RESPECT_MANUAL_SL and manual_sl_locked:
-                    send_to_discord("🔒 LOCK aktywny — pomijam update SL przy istniejącej pozycji.")
-                else:
-                    set_stop_loss_safe(symbol, position_side, sl_price)
+                set_stop_loss_safe(symbol, position_side, sl_price)
             processing = False
-            return jsonify(ok=True, msg="Position already open"), 200
+            return jsonify(ok=True), 200
 
-        # Jeśli jest pozycja w przeciwnym kierunku — zamknij ją
+        # Jeśli odwrotna pozycja — zamknij
         if position_size > 0.0001 and position_side in ("Buy", "Sell"):
             close_side = "Sell" if position_side == "Buy" else "Buy"
-            try:
-                session.place_order(
-                    category="linear",
-                    symbol=symbol,
-                    side=close_side,
-                    orderType="Market",
-                    qty=position_size,
-                    reduceOnly=True,
-                    timeInForce="GoodTillCancel"
-                )
-                send_to_discord(f"🔒 Zamknięto pozycję {position_side.upper()} ({position_size} {symbol})")
-                time.sleep(1.2)
-            except Exception as e:
-                send_to_discord(f"❗ Błąd przy zamykaniu pozycji: {e}")
+            session.place_order(category="linear", symbol=symbol, side=close_side,
+                                orderType="Market", qty=position_size,
+                                reduceOnly=True, timeInForce="GoodTillCancel")
+            send_to_discord(f"🔒 Zamknięto pozycję {position_side.upper()} ({position_size} {symbol})")
+            time.sleep(1.2)
 
-        # Otwórz nową pozycję, jeśli nic nie ma
+        # Nowa pozycja
         position_size, _ = get_current_position(symbol)
         if position_size < 0.0001:
-            # Nowy trade startuje "na czysto" — zdejmij lock
             manual_sl_locked = False
             last_sl_value = None
-
             qty = calculate_qty(symbol)
             if not qty:
                 processing = False
                 return "Invalid qty", 400
-
-            try:
-                side = "Buy" if action == "buy" else "Sell"
-                session.place_order(
-                    category="linear",
-                    symbol=symbol,
-                    side=side,
-                    orderType="Market",
-                    qty=qty,
-                    timeInForce="GoodTillCancel"
-                )
-                send_to_discord(f"📥 Otwarto pozycję {side.upper()} ({qty} {symbol})")
-                time.sleep(0.8)
-
-                if sl_price is not None:
-                    set_stop_loss_safe(symbol, side, sl_price)
-            except Exception as e:
-                send_to_discord(f"❗ Błąd przy składaniu zlecenia: {e}")
-
+            side = "Buy" if action == "buy" else "Sell"
+            session.place_order(category="linear", symbol=symbol, side=side,
+                                orderType="Market", qty=qty,
+                                timeInForce="GoodTillCancel")
+            send_to_discord(f"📥 Otwarto pozycję {side.upper()} ({qty} {symbol})")
+            if sl_price is not None:
+                set_stop_loss_safe(symbol, side, sl_price)
         processing = False
         return jsonify(ok=True), 200
 
@@ -410,4 +321,5 @@ def webhook():
 
 if __name__ == "__main__":
     print("🚀 Bot uruchomiony…")
+    print(f"✅ Dozwolone pary: {', '.join(ALLOWED_SYMBOLS)}")
     app.run(host="0.0.0.0", port=PORT)
