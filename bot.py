@@ -8,11 +8,7 @@ from pybit.unified_trading import HTTP
 
 # ====================== NARZĘDZIA / NORMALIZACJA ======================
 def normalize_symbol(sym: str) -> str:
-    """
-    Normalizuje symbole z TradingView/Bybit:
-    - usuwa sufiks '.P' (np. 'COAIUSDT.P' -> 'COAIUSDT')
-    - obcina spacje i zamienia na UPPER
-    """
+    """Normalizuje symbole z TradingView/Bybit: usuwa '.P', spacje i ustawia UPPERCASE"""
     if not sym:
         return ""
     s = str(sym).strip().upper()
@@ -29,14 +25,16 @@ except Exception:
     SYMBOL = os.environ.get("SYMBOL", "BTCUSDT")
     DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
     TESTNET = os.environ.get("TESTNET", "true").lower() in ("1", "true", "yes")
-    # Możesz też podać ENV: ALLOWED_SYMBOLS="WIFUSDT,COAIUSDT,COAIUSDT.P"
     ALLOWED_SYMBOLS = [
         s.strip() for s in os.environ.get("ALLOWED_SYMBOLS", "WIFUSDT,COAIUSDT").split(",") if s.strip()
     ]
 
-# Zestaw dozwolonych symboli po normalizacji (.P usunięte)
-ALLOWED_SET = {normalize_symbol(s) for s in (ALLOWED_SYMBOLS or [])}
+# Tryb i wartość pozycji
+POSITION_MODE = os.environ.get("POSITION_MODE", "PERCENT").upper()  # "PERCENT" lub "SIZE"
+POSITION_VALUE = float(os.environ.get("POSITION_VALUE", "1.0"))     # 1.0=100% lub np. 100 COAI
 
+# Zestaw dozwolonych symboli po normalizacji
+ALLOWED_SET = {normalize_symbol(s) for s in (ALLOWED_SYMBOLS or [])}
 PORT = int(os.environ.get("PORT", 5000))
 
 # Tryby zachowania
@@ -51,7 +49,6 @@ session = HTTP(api_key=API_KEY, api_secret=API_SECRET, testnet=TESTNET)
 # ====================== STAN BOTA ======================
 processing = False
 last_close_ts = 0.0
-
 last_sl_value = None
 last_tp_value = None
 last_sl_set_ts = 0.0
@@ -111,19 +108,35 @@ def get_sl_tp(symbol: str):
     except Exception:
         return None, None, 0
 
+# ====================== NOWA FUNKCJA WYLICZANIA ILOŚCI ======================
 def calculate_qty(symbol: str):
-    """Proste wyliczenie ilości – 100% dostępnego USDT."""
+    """
+    Zwraca ilość do pozycji w zależności od trybu:
+    - POSITION_MODE = "PERCENT": procent dostępnego USDT
+    - POSITION_MODE = "SIZE": stała ilość jednostek (np. 100 COAI)
+    """
     try:
-        send_to_discord("📊 Obliczam wielkość nowej pozycji…")
+        send_to_discord(f"📊 Tryb pozycji: {POSITION_MODE}, wartość: {POSITION_VALUE}")
+
+        # --- TRYB STAŁEJ WIELKOŚCI ---
+        if POSITION_MODE == "SIZE":
+            qty = float(POSITION_VALUE)
+            if qty <= 0:
+                send_to_discord("❗ Ilość musi być > 0.")
+                return None
+            send_to_discord(f"✅ Wielkość ustalona ręcznie: {qty} szt. {symbol}")
+            return qty
+
+        # --- TRYB PROCENTOWEGO KAPITAŁU ---
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
         coins = balance_data["result"]["list"][0]["coin"]
         usdt = next((c for c in coins if c.get("coin") == "USDT"), None)
         if not usdt:
-            send_to_discord("❗ Brak monety USDT na koncie UNIFIED.")
+            send_to_discord("❗ Brak USDT na koncie UNIFIED.")
             return None
 
         available_usdt = float(usdt.get("walletBalance", 0) or 0)
-        trade_usdt = available_usdt * 1  # 100% — dostosuj wg ryzyka
+        trade_usdt = available_usdt * POSITION_VALUE   # np. 1.0 → 100%, 0.5 → 50%
 
         tickers_data = session.get_tickers(category="linear")
         price_info = next((it for it in tickers_data["result"]["list"] if it.get("symbol") == symbol), None)
@@ -136,15 +149,13 @@ def calculate_qty(symbol: str):
             send_to_discord("❗ Nieprawidłowa cena rynkowa.")
             return None
 
-        qty = int(trade_usdt / last_price)
-        if qty < 1:
-            send_to_discord("❗ Wyliczona ilość < 1, nie złożę zlecenia.")
-            return None
+        qty = trade_usdt / last_price
+        qty = round(qty, 6)
 
-        send_to_discord(f"✅ Ilość do zlecenia: {qty} {symbol} przy cenie {last_price} USDT")
+        send_to_discord(f"✅ Wyliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
         return qty
     except Exception as e:
-        send_to_discord(f"❗ Błąd podczas obliczania ilości: {e}")
+        send_to_discord(f"❗ Błąd calculate_qty: {e}")
         return None
 
 def _isclose(a: float, b: float) -> bool:
@@ -153,15 +164,9 @@ def _isclose(a: float, b: float) -> bool:
     except Exception:
         return str(a) == str(b)
 
-# ====================== SL / TP (poprawiona wersja) ======================
+# ====================== SL / TP ======================
 def set_tp_sl_safe(symbol: str, side: str, sl_price: float | None, tp_price: float | None,
                    *, clear_sl: bool = False, clear_tp: bool = False):
-    """
-    Ustawia/kasuje TP i SL dla danej pozycji w pojedynczym wywołaniu set_trading_stop.
-    - None oznacza: nie ruszaj parametru
-    - clear_* = True oznacza: usuń dany parametr
-    - jeśli zmieniasz tylko SL, to dołącz aktualny TP (i odwrotnie)
-    """
     global last_sl_value, last_tp_value, last_sl_set_ts, last_tp_set_ts
     try:
         cur_sl, cur_tp, idx = get_sl_tp(symbol)
@@ -185,12 +190,6 @@ def set_tp_sl_safe(symbol: str, side: str, sl_price: float | None, tp_price: flo
             if (not RESPECT_MANUAL_TP) or (cur_tp is None) or (not _isclose(cur_tp, tp_price)):
                 want_tp = str(tp_price)
 
-        # zachowaj drugi parametr jeśli nie podany
-        if want_sl is not None and want_tp is None and cur_tp is not None and not clear_tp:
-            want_tp = str(cur_tp)
-        if want_tp is not None and want_sl is None and cur_sl is not None and not clear_sl:
-            want_sl = str(cur_sl)
-
         if want_sl is None and want_tp is None:
             return {"ok": True, "skipped": "no changes"}
 
@@ -209,7 +208,7 @@ def set_tp_sl_safe(symbol: str, side: str, sl_price: float | None, tp_price: flo
 
         session.set_trading_stop(**payload)
 
-        # Discord + stan
+        # Discord
         if want_sl == "0":
             last_sl_value = None
             send_to_discord(f"🧹 Kasuję SL dla {symbol}")
@@ -231,7 +230,7 @@ def set_tp_sl_safe(symbol: str, side: str, sl_price: float | None, tp_price: flo
         send_to_discord(f"❗ Błąd set_tp_sl_safe: {e}")
         return {"error": str(e)}
 
-# ====================== ROUTES ======================
+# ====================== FLASK ROUTES ======================
 @app.get("/")
 def index():
     return "✅ Bot działa!", 200
@@ -239,10 +238,8 @@ def index():
 @app.post("/webhook")
 def webhook():
     global processing, last_close_ts, manual_sl_locked, manual_tp_locked
-
     if processing:
         return "Processing in progress", 429
-
     processing = True
     try:
         data = parse_incoming_json()
@@ -256,7 +253,6 @@ def webhook():
         action = str(data.get("action", "")).lower().strip()
         symbol_raw = str(data.get("symbol", SYMBOL)).strip() or SYMBOL
         symbol = normalize_symbol(symbol_raw)
-
         if symbol not in ALLOWED_SET:
             send_to_discord(f"🚫 Niedozwolony symbol: {symbol_raw} (po normalizacji: {symbol}). "
                             f"Dozwolone: {', '.join(sorted(ALLOWED_SET))}")
@@ -285,52 +281,6 @@ def webhook():
 
         size, side = get_current_position(symbol)
 
-        # ===== UNLOCKS =====
-        if action == "unlock_sl":
-            manual_sl_locked = False
-            send_to_discord("🔓 Odblokowano SL (UNLOCK).")
-            processing = False
-            return jsonify(ok=True), 200
-        if action == "unlock_tp":
-            manual_tp_locked = False
-            send_to_discord("🔓 Odblokowano TP (UNLOCK).")
-            processing = False
-            return jsonify(ok=True), 200
-
-        # ===== FORCE UPDATE =====
-        if action == "force_update_sl":
-            if size > 0:
-                set_tp_sl_safe(symbol, side, sl_price, None)
-            processing = False
-            return jsonify(ok=True), 200
-        if action == "force_update_tp":
-            if size > 0:
-                set_tp_sl_safe(symbol, side, None, tp_price)
-            processing = False
-            return jsonify(ok=True), 200
-
-        # ===== UPDATE/CLEAR =====
-        if action == "update_sl":
-            if size > 0:
-                set_tp_sl_safe(symbol, side, sl_price, None)
-            processing = False
-            return jsonify(ok=True), 200
-        if action == "update_tp":
-            if size > 0:
-                set_tp_sl_safe(symbol, side, None, tp_price)
-            processing = False
-            return jsonify(ok=True), 200
-        if action == "clear_sl":
-            if size > 0:
-                set_tp_sl_safe(symbol, side, None, None, clear_sl=True)
-            processing = False
-            return jsonify(ok=True), 200
-        if action == "clear_tp":
-            if size > 0:
-                set_tp_sl_safe(symbol, side, None, None, clear_tp=True)
-            processing = False
-            return jsonify(ok=True), 200
-
         # ===== CLOSE =====
         if action == "close":
             now = time.time()
@@ -357,8 +307,8 @@ def webhook():
             if size > 0 and side in ("Buy", "Sell"):
                 close_side = "Sell" if side == "Buy" else "Buy"
                 session.place_order(category="linear", symbol=symbol, side=close_side,
-                                    orderType="Market", qty=size,
-                                    reduceOnly=True, timeInForce="GoodTillCancel")
+                                    orderType="Market", qty=size, reduceOnly=True,
+                                    timeInForce="GoodTillCancel")
                 send_to_discord(f"🔒 Zamknięto pozycję {side.upper()} ({size} {symbol})")
                 time.sleep(1.2)
 
@@ -369,12 +319,10 @@ def webhook():
 
             side_new = "Buy" if action == "buy" else "Sell"
             session.place_order(category="linear", symbol=symbol, side=side_new,
-                                orderType="Market", qty=qty,
-                                timeInForce="GoodTillCancel")
+                                orderType="Market", qty=qty, timeInForce="GoodTillCancel")
             send_to_discord(f"📥 Otwarto pozycję {side_new.upper()} ({qty} {symbol})")
 
             set_tp_sl_safe(symbol, side_new, sl_price, tp_price)
-
             processing = False
             return jsonify(ok=True), 200
 
@@ -389,4 +337,5 @@ def webhook():
 if __name__ == "__main__":
     print("🚀 Bot uruchomiony…")
     print(f"✅ Dozwolone pary: {', '.join(sorted(ALLOWED_SET))}")
+    print(f"📈 Tryb pozycji: {POSITION_MODE}, wartość: {POSITION_VALUE}")
     app.run(host="0.0.0.0", port=PORT)
