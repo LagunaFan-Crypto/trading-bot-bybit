@@ -18,7 +18,7 @@ def normalize_symbol(sym: str) -> str:
 
 # ====================== KONFIGURACJA ======================
 try:
-    from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET, ALLOWED_SYMBOLS
+    from config import API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL, TESTNET, ALLOWED_SYMBOLS, POSITION_MODE, POSITION_VALUE
 except Exception:
     API_KEY = os.environ.get("API_KEY", "")
     API_SECRET = os.environ.get("API_SECRET", "")
@@ -28,10 +28,8 @@ except Exception:
     ALLOWED_SYMBOLS = [
         s.strip() for s in os.environ.get("ALLOWED_SYMBOLS", "WIFUSDT,COAIUSDT").split(",") if s.strip()
     ]
-
-# Tryb i wartość pozycji
-POSITION_MODE = os.environ.get("POSITION_MODE", "PERCENT").upper()  # "PERCENT" lub "SIZE"
-POSITION_VALUE = float(os.environ.get("POSITION_VALUE", "1.0"))     # 1.0=100% lub np. 100 COAI
+    POSITION_MODE = os.environ.get("POSITION_MODE", "PERCENT").upper()
+    POSITION_VALUE = float(os.environ.get("POSITION_VALUE", "1.0"))
 
 # Zestaw dozwolonych symboli po normalizacji
 ALLOWED_SET = {normalize_symbol(s) for s in (ALLOWED_SYMBOLS or [])}
@@ -111,21 +109,33 @@ def get_sl_tp(symbol: str):
 # ====================== NOWA FUNKCJA WYLICZANIA ILOŚCI ======================
 def calculate_qty(symbol: str):
     """
-    Zwraca ilość do pozycji w zależności od trybu:
-    - POSITION_MODE = "PERCENT": procent dostępnego USDT
-    - POSITION_MODE = "SIZE": stała ilość jednostek (np. 100 COAI)
+    Zwraca (qty, value_usdt):
+    - qty = ilość jednostek
+    - value_usdt = wartość pozycji w USDT
     """
     try:
         send_to_discord(f"📊 Tryb pozycji: {POSITION_MODE}, wartość: {POSITION_VALUE}")
+
+        tickers_data = session.get_tickers(category="linear")
+        price_info = next((it for it in tickers_data["result"]["list"] if it.get("symbol") == symbol), None)
+        if not price_info:
+            send_to_discord(f"❗ Symbol {symbol} nie znaleziony.")
+            return None, None
+
+        last_price = float(price_info.get("lastPrice") or 0)
+        if last_price <= 0:
+            send_to_discord("❗ Nieprawidłowa cena rynkowa.")
+            return None, None
 
         # --- TRYB STAŁEJ WIELKOŚCI ---
         if POSITION_MODE == "SIZE":
             qty = float(POSITION_VALUE)
             if qty <= 0:
                 send_to_discord("❗ Ilość musi być > 0.")
-                return None
-            send_to_discord(f"✅ Wielkość ustalona ręcznie: {qty} szt. {symbol}")
-            return qty
+                return None, None
+            value_usdt = qty * last_price
+            send_to_discord(f"✅ Wielkość ustalona: {qty} {symbol} ≈ {value_usdt:.2f} USDT (Cena: {last_price})")
+            return qty, value_usdt
 
         # --- TRYB PROCENTOWEGO KAPITAŁU ---
         balance_data = session.get_wallet_balance(accountType="UNIFIED")
@@ -133,30 +143,19 @@ def calculate_qty(symbol: str):
         usdt = next((c for c in coins if c.get("coin") == "USDT"), None)
         if not usdt:
             send_to_discord("❗ Brak USDT na koncie UNIFIED.")
-            return None
+            return None, None
 
         available_usdt = float(usdt.get("walletBalance", 0) or 0)
         trade_usdt = available_usdt * POSITION_VALUE   # np. 1.0 → 100%, 0.5 → 50%
-
-        tickers_data = session.get_tickers(category="linear")
-        price_info = next((it for it in tickers_data["result"]["list"] if it.get("symbol") == symbol), None)
-        if not price_info:
-            send_to_discord(f"❗ Symbol {symbol} nie znaleziony.")
-            return None
-
-        last_price = float(price_info.get("lastPrice") or 0)
-        if last_price <= 0:
-            send_to_discord("❗ Nieprawidłowa cena rynkowa.")
-            return None
-
         qty = trade_usdt / last_price
         qty = round(qty, 6)
 
-        send_to_discord(f"✅ Wyliczona ilość: {qty} {symbol} przy cenie {last_price} USDT")
-        return qty
+        send_to_discord(f"✅ Wyliczona ilość: {qty} {symbol} ≈ {trade_usdt:.2f} USDT (Cena: {last_price})")
+        return qty, trade_usdt
+
     except Exception as e:
         send_to_discord(f"❗ Błąd calculate_qty: {e}")
-        return None
+        return None, None
 
 def _isclose(a: float, b: float) -> bool:
     try:
@@ -175,56 +174,30 @@ def set_tp_sl_safe(symbol: str, side: str, sl_price: float | None, tp_price: flo
             return {"skipped": "no position"}
 
         want_sl, want_tp = None, None
-
-        # STOP LOSS
         if clear_sl:
             want_sl = "0"
-        elif sl_price is not None and sl_price > 0:
-            if (not RESPECT_MANUAL_SL) or (cur_sl is None) or (not _isclose(cur_sl, sl_price)):
-                want_sl = str(sl_price)
-
-        # TAKE PROFIT
+        elif sl_price:
+            want_sl = str(sl_price)
         if clear_tp:
             want_tp = "0"
-        elif tp_price is not None and tp_price > 0:
-            if (not RESPECT_MANUAL_TP) or (cur_tp is None) or (not _isclose(cur_tp, tp_price)):
-                want_tp = str(tp_price)
+        elif tp_price:
+            want_tp = str(tp_price)
 
         if want_sl is None and want_tp is None:
             return {"ok": True, "skipped": "no changes"}
 
-        payload = {
-            "category": "linear",
-            "symbol": symbol,
-            "positionIdx": idx,
-            "tpslMode": "Full",
-            "slTriggerBy": "LastPrice",
-            "tpTriggerBy": "LastPrice",
-        }
-        if want_sl is not None:
-            payload["stopLoss"] = want_sl
-        if want_tp is not None:
-            payload["takeProfit"] = want_tp
-
+        payload = {"category": "linear", "symbol": symbol, "positionIdx": idx,
+                   "tpslMode": "Full", "slTriggerBy": "LastPrice", "tpTriggerBy": "LastPrice"}
+        if want_sl: payload["stopLoss"] = want_sl
+        if want_tp: payload["takeProfit"] = want_tp
         session.set_trading_stop(**payload)
 
-        # Discord
         if want_sl == "0":
-            last_sl_value = None
             send_to_discord(f"🧹 Kasuję SL dla {symbol}")
-        elif isinstance(want_sl, str):
-            last_sl_value = float(want_sl)
-            last_sl_set_ts = time.time()
-            send_to_discord(f"🛡️ Ustawiam SL @ {want_sl} dla {symbol}")
-
+        elif want_sl: send_to_discord(f"🛡️ Ustawiam SL @ {want_sl}")
         if want_tp == "0":
-            last_tp_value = None
             send_to_discord(f"🧹 Kasuję TP dla {symbol}")
-        elif isinstance(want_tp, str):
-            last_tp_value = float(want_tp)
-            last_tp_set_ts = time.time()
-            send_to_discord(f"🎯 Ustawiam TP @ {want_tp} dla {symbol}")
-
+        elif want_tp: send_to_discord(f"🎯 Ustawiam TP @ {want_tp}")
         return {"ok": True}
     except Exception as e:
         send_to_discord(f"❗ Błąd set_tp_sl_safe: {e}")
@@ -237,7 +210,7 @@ def index():
 
 @app.post("/webhook")
 def webhook():
-    global processing, last_close_ts, manual_sl_locked, manual_tp_locked
+    global processing, last_close_ts
     if processing:
         return "Processing in progress", 429
     processing = True
@@ -254,31 +227,12 @@ def webhook():
         symbol_raw = str(data.get("symbol", SYMBOL)).strip() or SYMBOL
         symbol = normalize_symbol(symbol_raw)
         if symbol not in ALLOWED_SET:
-            send_to_discord(f"🚫 Niedozwolony symbol: {symbol_raw} (po normalizacji: {symbol}). "
-                            f"Dozwolone: {', '.join(sorted(ALLOWED_SET))}")
+            send_to_discord(f"🚫 Niedozwolony symbol: {symbol_raw}")
             processing = False
             return jsonify(error="symbol not allowed"), 400
 
-        sl_val = data.get("sl")
-        tp_val = data.get("tp")
-        try:
-            sl_price = float(sl_val) if sl_val not in ("", None) else None
-        except Exception:
-            sl_price = None
-        try:
-            tp_price = float(tp_val) if tp_val not in ("", None) else None
-        except Exception:
-            tp_price = None
-
-        allowed = ("buy", "sell", "close",
-                   "update_sl", "update_tp",
-                   "clear_sl", "clear_tp",
-                   "unlock_sl", "unlock_tp",
-                   "force_update_sl", "force_update_tp")
-        if action not in allowed:
-            processing = False
-            return ("", 204)
-
+        sl_val = float(data.get("sl") or 0) or None
+        tp_val = float(data.get("tp") or 0) or None
         size, side = get_current_position(symbol)
 
         # ===== CLOSE =====
@@ -291,28 +245,27 @@ def webhook():
             if size <= 0:
                 processing = False
                 return ("", 204)
+            tickers = session.get_tickers(category="linear")["result"]["list"]
+            last_price = float(next((t["lastPrice"] for t in tickers if t["symbol"] == symbol), 0))
+            value_usdt = size * last_price
             close_side = "Sell" if side == "Buy" else "Buy"
             session.place_order(category="linear", symbol=symbol, side=close_side,
-                                orderType="Market", qty=size, reduceOnly=True,
-                                timeInForce="GoodTillCancel")
-            send_to_discord(f"🧯 CLOSE: zamknięto pozycję {side.upper()} ({size} {symbol})")
+                                orderType="Market", qty=size, reduceOnly=True, timeInForce="GoodTillCancel")
+            send_to_discord(f"🧯 CLOSE: zamknięto {side.upper()} {size} {symbol} ≈ {value_usdt:.2f} USDT")
             set_tp_sl_safe(symbol, side, None, None, clear_sl=True, clear_tp=True)
-            manual_sl_locked = False
-            manual_tp_locked = False
             processing = False
             return jsonify(ok=True), 200
 
         # ===== BUY / SELL =====
         if action in ("buy", "sell"):
-            if size > 0 and side in ("Buy", "Sell"):
+            if size > 0:
                 close_side = "Sell" if side == "Buy" else "Buy"
                 session.place_order(category="linear", symbol=symbol, side=close_side,
-                                    orderType="Market", qty=size, reduceOnly=True,
-                                    timeInForce="GoodTillCancel")
-                send_to_discord(f"🔒 Zamknięto pozycję {side.upper()} ({size} {symbol})")
+                                    orderType="Market", qty=size, reduceOnly=True, timeInForce="GoodTillCancel")
+                send_to_discord(f"🔒 Zamknięto poprzednią pozycję {side.upper()} ({size} {symbol})")
                 time.sleep(1.2)
 
-            qty = calculate_qty(symbol)
+            qty, value_usdt = calculate_qty(symbol)
             if not qty:
                 processing = False
                 return "Invalid qty", 400
@@ -320,15 +273,17 @@ def webhook():
             side_new = "Buy" if action == "buy" else "Sell"
             session.place_order(category="linear", symbol=symbol, side=side_new,
                                 orderType="Market", qty=qty, timeInForce="GoodTillCancel")
-            send_to_discord(f"📥 Otwarto pozycję {side_new.upper()} ({qty} {symbol})")
-
-            set_tp_sl_safe(symbol, side_new, sl_price, tp_price)
+            msg = f"📥 Otwarto pozycję {side_new.upper()} ({qty} {symbol})"
+            if value_usdt:
+                msg += f" ≈ {value_usdt:.2f} USDT"
+            send_to_discord(msg)
+            print("[INFO]", msg)
+            set_tp_sl_safe(symbol, side_new, sl_val, tp_val)
             processing = False
             return jsonify(ok=True), 200
 
         processing = False
         return jsonify(ok=True), 200
-
     except Exception as e:
         send_to_discord(f"❗ Błąd systemowy: {e}")
         processing = False
