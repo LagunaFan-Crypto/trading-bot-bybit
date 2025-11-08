@@ -37,10 +37,6 @@ except Exception:
 ALLOWED_SET = {normalize_symbol(s) for s in (ALLOWED_SYMBOLS or [])}
 PORT = int(os.environ.get("PORT", 5000))
 
-RESPECT_MANUAL_SL = os.environ.get("RESPECT_MANUAL_SL", "true").lower() in ("1", "true", "yes")
-RESPECT_MANUAL_TP = os.environ.get("RESPECT_MANUAL_TP", "true").lower() in ("1", "true", "yes")
-IGNORE_NON_JSON = os.environ.get("IGNORE_NON_JSON", "true").lower() in ("1", "true", "yes")
-
 app = Flask(__name__)
 session = HTTP(api_key=API_KEY, api_secret=API_SECRET, testnet=TESTNET)
 
@@ -83,11 +79,9 @@ def get_current_position(symbol: str):
         return 0.0, "None", 0.0
 
 # ====================== WYLICZANIE ILOŚCI ======================
-def calculate_qty(symbol: str):
+def calculate_qty(symbol: str, mode: str, value: float):
     """Zwraca (qty, value_usdt)"""
     try:
-        send_to_discord(f"📊 Tryb pozycji: {POSITION_MODE}, wartość: {POSITION_VALUE}")
-
         tickers = session.get_tickers(category="linear")["result"]["list"]
         info = next((x for x in tickers if x["symbol"] == symbol), None)
         if not info:
@@ -97,14 +91,14 @@ def calculate_qty(symbol: str):
         if last_price <= 0:
             return None, None
 
-        # --- TRYB STAŁEJ WIELKOŚCI ---
-        if POSITION_MODE == "SIZE":
-            qty = float(POSITION_VALUE)
-            value = qty * last_price
-            send_to_discord(f"✅ Wielkość ustalona: {qty} {symbol} ≈ {value:.2f} USDT (Cena: {last_price})")
-            return qty, value
+        # --- TRYB SIZE ---
+        if mode == "SIZE":
+            qty = float(value)
+            value_usdt = qty * last_price
+            send_to_discord(f"📊 Tryb: SIZE → {qty} {symbol} ≈ {value_usdt:.2f} USDT")
+            return qty, value_usdt
 
-        # --- TRYB PROCENTOWY ---
+        # --- TRYB PERCENT ---
         balance = session.get_wallet_balance(accountType="UNIFIED")
         coins = balance["result"]["list"][0]["coin"]
         usdt = next((c for c in coins if c["coin"] == "USDT"), None)
@@ -112,15 +106,15 @@ def calculate_qty(symbol: str):
             send_to_discord("❗ Brak USDT.")
             return None, None
         wallet = float(usdt["walletBalance"])
-        trade_usdt = wallet * POSITION_VALUE
+        trade_usdt = wallet * value
         qty = round(trade_usdt / last_price, 6)
-        send_to_discord(f"✅ Wyliczona ilość: {qty} {symbol} ≈ {trade_usdt:.2f} USDT (Cena: {last_price})")
+        send_to_discord(f"📊 Tryb: PERCENT ({value*100:.1f}%) → {qty} {symbol} ≈ {trade_usdt:.2f} USDT")
         return qty, trade_usdt
     except Exception as e:
         send_to_discord(f"❗ Błąd calculate_qty: {e}")
         return None, None
 
-# ====================== ZLECENIA SL/TP ======================
+# ====================== USTAWIENIE SL/TP ======================
 def set_tp_sl_safe(symbol, side, sl, tp):
     try:
         res = session.get_positions(category="linear", symbol=symbol)
@@ -160,6 +154,19 @@ def webhook():
         sl = float(data.get("sl") or 0) or None
         tp = float(data.get("tp") or 0) or None
 
+        # --- odczyt trybu handlu i wartości z alertu ---
+        mode_override = str(data.get("mode", "")).upper().strip()
+        value_override = data.get("value")
+        if mode_override in ("PERCENT", "SIZE"):
+            mode_active = mode_override
+            try:
+                value_active = float(value_override)
+            except Exception:
+                value_active = POSITION_VALUE
+        else:
+            mode_active = POSITION_MODE
+            value_active = POSITION_VALUE
+
         size, side, entry = get_current_position(symbol)
 
         # ===== CLOSE =====
@@ -198,7 +205,7 @@ def webhook():
                 send_to_discord(f"🔒 Zamknięto poprzednią pozycję {side.upper()} ({size} {symbol})")
                 time.sleep(1.2)
 
-            qty, value = calculate_qty(symbol)
+            qty, value_usdt = calculate_qty(symbol, mode_active, value_active)
             if not qty:
                 processing = False
                 return "Invalid qty", 400
@@ -207,8 +214,8 @@ def webhook():
             session.place_order(category="linear", symbol=symbol, side=new_side,
                                 orderType="Market", qty=qty, timeInForce="GoodTillCancel")
             msg = f"📥 Otwarto pozycję {new_side.upper()} ({qty} {symbol})"
-            if value:
-                msg += f" ≈ {value:.2f} USDT"
+            if value_usdt:
+                msg += f" ≈ {value_usdt:.2f} USDT ({mode_active} {value_active})"
             send_to_discord(msg)
             print("[INFO]", msg)
             set_tp_sl_safe(symbol, new_side, sl, tp)
@@ -225,5 +232,5 @@ def webhook():
 if __name__ == "__main__":
     print("🚀 Bot uruchomiony…")
     print(f"✅ Dozwolone pary: {', '.join(sorted(ALLOWED_SET))}")
-    print(f"📈 Tryb pozycji: {POSITION_MODE}, wartość: {POSITION_VALUE}")
+    print(f"📈 Tryb domyślny: {POSITION_MODE}, wartość: {POSITION_VALUE}")
     app.run(host="0.0.0.0", port=PORT)
