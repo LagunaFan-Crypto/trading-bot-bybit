@@ -122,13 +122,33 @@ def set_tp_sl_safe(symbol, side, sl, tp):
         if not items:
             return
         idx = int(items[0]["positionIdx"])
-        payload = {"category": "linear", "symbol": symbol, "positionIdx": idx,
-                   "tpslMode": "Full", "slTriggerBy": "LastPrice", "tpTriggerBy": "LastPrice"}
-        if sl: payload["stopLoss"] = str(sl)
-        if tp: payload["takeProfit"] = str(tp)
+
+        payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "positionIdx": idx,
+            "tpslMode": "Full",
+            "slTriggerBy": "LastPrice",
+            "tpTriggerBy": "LastPrice"
+        }
+
+        # Dodajemy tylko jeśli rzeczywiście są
+        if sl:
+            payload["stopLoss"] = str(sl)
+        if tp:
+            payload["takeProfit"] = str(tp)
+
+        # jeśli żadne nie jest ustawione, nie wysyłaj requestu (fix błędu 10001)
+        if not sl and not tp:
+            return
+
         session.set_trading_stop(**payload)
-        if sl: send_to_discord(f"🛡️ Ustawiam SL @ {sl}")
-        if tp: send_to_discord(f"🎯 Ustawiam TP @ {tp}")
+
+        if sl:
+            send_to_discord(f"🛡️ Ustawiam SL @ {sl}")
+        if tp:
+            send_to_discord(f"🎯 Ustawiam TP @ {tp}")
+
     except Exception as e:
         send_to_discord(f"❗ Błąd set_tp_sl_safe: {e}")
 
@@ -191,7 +211,7 @@ def webhook():
             msg = f"🧯 CLOSE: zamknięto {side.upper()} {size} {symbol} ≈ {value:.2f} USDT ({sign}{pnl_pct:.2f}%)"
             send_to_discord(msg)
             print("[INFO]", msg)
-            set_tp_sl_safe(symbol, side, None, None)
+            # fix: nie wysyłamy pustego SL/TP
             processing = False
             return jsonify(ok=True), 200
 
