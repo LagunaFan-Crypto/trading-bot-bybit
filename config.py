@@ -23,3 +23,7 @@ DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1392636936723763210/n
 # jeśli strategia NIE przekaże "mode" i "value" w webhooku.
 POSITION_MODE = "PERCENT"   # "PERCENT" lub "SIZE"
 POSITION_VALUE = 1.0        # 1.0 = 100% kapitału lub np. 100 = 100 sztuk w trybie SIZE
+
+LEVERAGE = 5           # dźwignia dla kontraktów linear
+AUTOSCALE_QTY = True   # automatycznie zmniejsz ilość, gdy brakuje marginu
+SAFETY_MARGIN = 0.95   # nie używaj 100% dostępnego marginu
