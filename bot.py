@@ -1,221 +1,321 @@
-//@version=6
-strategy("Supertrend Strategy (Bot)", 
-     overlay = true,
-     process_orders_on_close = true,
-     calc_on_every_tick = true,
-     max_bars_back = 2000)
+import os
+import time
+import math
+import json
+import requests
+from flask import Flask, request, jsonify
+from pybit.unified_trading import HTTP
 
-// ===================================================================
-//  PARAMETRY SUPERTREND
-// ===================================================================
-groupST = "Supertrend"
-atrPeriod = input.int(56, "Długość ATR", group=groupST)
-factor    = input.float(8.12, "Współczynnik", step = 0.01, group=groupST)
-[supertrend, direction] = ta.supertrend(factor, atrPeriod)
-upTrend = direction < 0
-downTrend = direction > 0
+# ====================== NARZĘDZIA / NORMALIZACJA ======================
+def normalize_symbol(sym: str) -> str:
+    if not sym:
+        return ""
+    s = str(sym).strip().upper()
+    if s.endswith(".P"):
+        s = s[:-2]
+    return s
 
-// ===================================================================
-//  FILTR ATR
-// ===================================================================
-groupATR = "Filtr ATR"
-atrValue = ta.atr(atrPeriod)
-atrMinValue = input.float(0.35, "Minimalny ATR", step=0.0001, group=groupATR)
-useAtrFilter = input.bool(true, "Włącz filtr ATR (blokada wejść przy niskim ATR)", group=groupATR)
+# ====================== KONFIGURACJA ======================
+try:
+    from config import (
+        API_KEY, API_SECRET, SYMBOL, DISCORD_WEBHOOK_URL,
+        TESTNET, ALLOWED_SYMBOLS, POSITION_VALUE
+    )
+except Exception:
+    API_KEY = os.environ.get("API_KEY", "")
+    API_SECRET = os.environ.get("API_SECRET", "")
+    SYMBOL = os.environ.get("SYMBOL", "BTCUSDT")
+    DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    TESTNET = os.environ.get("TESTNET", "true").lower() in ("1","true","yes")
+    ALLOWED_SYMBOLS = [s.strip() for s in os.environ.get("ALLOWED_SYMBOLS","WIFUSDT,COAIUSDT").split(",") if s.strip()]
+    POSITION_VALUE = float(os.environ.get("POSITION_VALUE","1.0"))
 
-atrOk = atrValue >= atrMinValue
+ALLOWED_SET = {normalize_symbol(s) for s in (ALLOWED_SYMBOLS or [])}
+PORT = int(os.environ.get("PORT", 5000))
 
-// ===================================================================
-//  TAKE PROFIT
-// ===================================================================
-groupTP = "Take Profit"
-tpEnabled = input.bool(true, "Włącz TP", group=groupTP)
-tpPercent = input.float(7.8, "Take Profit (%)", step=0.1, group=groupTP)
-tpColorLong = input.color(color.new(color.lime, 0), "Kolor linii TP (Long)", group=groupTP)
-tpColorShort = input.color(color.new(color.red, 0), "Kolor linii TP (Short)", group=groupTP)
+app = Flask(__name__)
+session = HTTP(api_key=API_KEY, api_secret=API_SECRET, testnet=TESTNET)
 
-// ===================================================================
-//  WIZUALIZACJA ATR
-// ===================================================================
-groupATRvis = "Wizualizacja ATR"
-showAtrMarkers = input.bool(true, "Pokaż status ATR (czy spełnia minimalny próg)", group=groupATRvis)
-atrAboveColor = input.color(color.new(color.lime, 0), "Kolor ATR OK (powyżej minimum)", group=groupATRvis)
-atrBelowColor = input.color(color.new(color.red, 0), "Kolor ATR LOW (poniżej minimum)", group=groupATRvis)
-atrMarkerTransparency = input.int(0, "Przezroczystość znaczników ATR", minval=0, maxval=100, group=groupATRvis)
+processing = False
 
-plotchar(showAtrMarkers and atrOk,
-     title="ATR OK",
-     char="·",
-     location=location.top,
-     color=color.new(atrAboveColor, atrMarkerTransparency),
-     size=size.tiny)
+# ====================== POMOCNICZE ======================
+def send_to_discord(message: str):
+    if not DISCORD_WEBHOOK_URL:
+        print(f"[Discord OFF] {message}")
+        return
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=10)
+    except Exception as e:
+        print(f"❌ Discord error: {e}")
 
-plotchar(showAtrMarkers and not atrOk,
-     title="ATR LOW",
-     char="·",
-     location=location.bottom,
-     color=color.new(atrBelowColor, atrMarkerTransparency),
-     size=size.tiny)
+def parse_incoming_json():
+    data = request.get_json(silent=True)
+    if data is not None:
+        return data
+    raw = request.data.decode("utf-8") if request.data else ""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
 
-// ===================================================================
-//  SYGNAŁY
-// ===================================================================
-longSignal  = ta.crossover(close, supertrend)
-shortSignal = ta.crossunder(close, supertrend)
+def get_current_position(symbol: str):
+    try:
+        res = session.get_positions(category="linear", symbol=symbol)
+        items = (res or {}).get("result", {}).get("list", []) or []
+        if not items:
+            return 0.0, "None", 0.0
+        p = items[0]
+        return float(p.get("size") or 0), p.get("side") or "None", float(p.get("entryPrice") or 0)
+    except Exception as e:
+        send_to_discord(f"❗ get_current_position error: {e}")
+        return 0.0, "None", 0.0
 
-// ===================================================================
-//  ZAMYKANIE POZYCJI — BEZ WZGLĘDU NA ATR
-// ===================================================================
-if strategy.position_size > 0 and shortSignal
-    strategy.close("BUY", comment="Trend Change Close")
-    alert('{"action":"close","symbol":"' + syminfo.ticker + '"}', alert.freq_once_per_bar_close)
+def get_instrument(symbol: str):
+    """Zwraca dict z filtrami lot/qty/price; None jeśli symbol niedozwolony/nie istnieje."""
+    try:
+        info = session.get_instruments_info(category="linear", symbol=symbol)
+        lst = (info or {}).get("result", {}).get("list", []) or []
+        return lst[0] if lst else None
+    except Exception as e:
+        send_to_discord(f"❗ get_instrument error: {e}")
+        return None
 
-if strategy.position_size < 0 and longSignal
-    strategy.close("SELL", comment="Trend Change Close")
-    alert('{"action":"close","symbol":"' + syminfo.ticker + '"}', alert.freq_once_per_bar_close)
+def get_last_price(symbol: str) -> float:
+    try:
+        t = session.get_tickers(category="linear", symbol=symbol)
+        lst = (t or {}).get("result", {}).get("list", []) or []
+        return float(lst[0].get("lastPrice")) if lst else 0.0
+    except Exception:
+        return 0.0
 
-// ===================================================================
-//  WEJŚCIA — TYLKO GDY ATR POWYŻEJ MINIMUM
-//  + WYSYŁANIE TP DO BOTA PRZY SKŁADANIU ZLECENIA
-// ===================================================================
-canEnter = not useAtrFilter or (useAtrFilter and atrOk)
+def quantize_qty(qty: float, lot_step: float, min_qty: float) -> float:
+    if lot_step <= 0:
+        return qty
+    steps = math.floor(qty / lot_step)
+    q = steps * lot_step
+    if q < min_qty:
+        return 0.0
+    return float(f"{q:.10f}")
 
-// --- LONG ---
-if canEnter and longSignal
-    float tpPriceLong = na
-    if tpEnabled
-        tpPriceLong := close * (1 + tpPercent / 100.0)
+# ====================== USTAWIENIE SL/TP (bez pustych requestów) ======================
+def set_tp_sl_safe(symbol, sl, tp):
+    try:
+        if not sl and not tp:
+            return  # nic nie ustawiamy
+        res = session.get_positions(category="linear", symbol=symbol)
+        items = res["result"]["list"]
+        if not items:
+            return
+        idx = int(items[0]["positionIdx"])
+        payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "positionIdx": idx,
+            "tpslMode": "Full",
+            "slTriggerBy": "LastPrice",
+            "tpTriggerBy": "LastPrice"
+        }
+        if sl:
+            payload["stopLoss"] = str(sl)
+        if tp:
+            payload["takeProfit"] = str(tp)
+        session.set_trading_stop(**payload)
+        if sl:
+            send_to_discord(f"🛡️ SL @ {sl}")
+        if tp:
+            send_to_discord(f"🎯 TP @ {tp}")
+    except Exception as e:
+        send_to_discord(f"❗ set_tp_sl_safe error: {e}")
 
-    strategy.entry("BUY", strategy.long)
+# ====================== WYLICZANIE ILOŚCI (TYLKO PROCENT) ======================
+def calculate_qty(symbol: str, percent: float):
+    """
+    Zwraca (qty, notional_usdt).
+    - ZAWSZE procent dostępnego salda (UNIFIED / USDT)
+    - percent: 1.0 = 100%, 0.25 = 25%, 0.5 = 50% itd.
+      Jeśli ktoś poda >1, traktujemy jako % (np. 25 = 25%).
+    """
+    try:
+        inst = get_instrument(symbol)
+        if not inst:
+            send_to_discord(f"🚫 Symbol {symbol} nie jest dostępny (not whitelisted / brak kontraktu linear).")
+            return None, None
 
-    // ⭐ POPRAWIONY ALERT — 1 LINIA, ZERO BŁĘDÓW
-    string alertMsgLong = tpEnabled ? '{"action":"buy","symbol":"' + syminfo.ticker + '","tp":' + str.tostring(tpPriceLong, format.mintick) + '}' : '{"action":"buy","symbol":"' + syminfo.ticker + '"}'
-    alert(alertMsgLong, alert.freq_once_per_bar_close)
+        lot = inst.get("lotSizeFilter", {}) or {}
+        min_qty = float(lot.get("minOrderQty", 0) or 0)
+        qty_step = float(lot.get("qtyStep", 0) or 0)
 
-// --- SHORT ---
-if canEnter and shortSignal
-    float tpPriceShort = na
-    if tpEnabled
-        tpPriceShort := close * (1 - tpPercent / 100.0)
+        last_price = get_last_price(symbol)
+        if last_price <= 0:
+            send_to_discord("❗ Brak ceny rynkowej.")
+            return None, None
 
-    strategy.entry("SELL", strategy.short)
+        # saldo
+        wb = session.get_wallet_balance(accountType="UNIFIED")["result"]["list"][0]["coin"]
+        usdt = next((c for c in wb if c.get("coin") == "USDT"), None)
+        if not usdt:
+            send_to_discord("❗ Brak USDT na rachunku UNIFIED.")
+            return None, None
+        available = float(usdt.get("availableBalance") or usdt.get("walletBalance") or 0.0)
 
-    // ⭐ POPRAWIONY ALERT — 1 LINIA, ZERO BŁĘDÓW
-    string alertMsgShort = tpEnabled ? '{"action":"sell","symbol":"' + syminfo.ticker + '","tp":' + str.tostring(tpPriceShort, format.mintick) + '}' : '{"action":"sell","symbol":"' + syminfo.ticker + '"}'
-    alert(alertMsgShort, alert.freq_once_per_bar_close)
+        # normalizacja procentu
+        v = float(percent)
+        if v > 1.0:
+            v = v / 100.0  # 25 => 25%
+        v = max(0.0, min(1.0, v))
 
-// ===================================================================
-//  TAKE PROFIT — WIZUALIZACJA I BACKTEST (strategy.exit ZOSTAJE)
-// ===================================================================
-var line tpLine = na
+        target_notional = available * v
+        raw_qty = target_notional / last_price
 
-if tpEnabled
-    if strategy.position_size > 0
-        longTP = strategy.position_avg_price * (1 + tpPercent / 100)
-        strategy.exit("TP Long Backtest", from_entry="BUY", limit=longTP)
-        if not na(tpLine)
-            line.delete(tpLine)
-        tpLine := line.new(bar_index - 1, longTP, bar_index, longTP, extend = extend.right, color = tpColorLong, style = line.style_dotted, width = 1)
+        # lotStep/minQty
+        qty = quantize_qty(raw_qty, qty_step, min_qty)
+        if qty <= 0:
+            send_to_discord("❗ Ilość po zaokrągleniu < minQty. Zlecenie pominięte.")
+            return None, None
 
-    if strategy.position_size < 0
-        shortTP = strategy.position_avg_price * (1 - tpPercent / 100)
-        strategy.exit("TP Short Backtest", from_entry="SELL", limit=shortTP)
-        if not na(tpLine)
-            line.delete(tpLine)
-        tpLine := line.new(bar_index - 1, shortTP, bar_index, shortTP, extend = extend.right, color = tpColorShort, style = line.style_dotted, width = 1)
+        final_notional = qty * last_price
+        send_to_discord(
+            f"📊 Tryb: PERCENT ({v*100:.2f}%) → {qty} {symbol} ≈ {final_notional:.2f} USDT "
+            f"(avail {available:.2f} USDT)"
+        )
 
-    if strategy.position_size == 0 and not na(tpLine)
-        line.delete(tpLine)
-        tpLine := na
+        return qty, final_notional
 
-// ===================================================================
-//  KOLOROWANIE ŚWIEC WG POZYCJI
-// ===================================================================
-groupCOL = "Kolory świec"
-longColor    = input.color(color.new(color.lime, 0), "Kolor świec (Long)", group=groupCOL)
-shortColor   = input.color(color.new(color.red, 0), "Kolor świec (Short)", group=groupCOL)
-neutralColor = input.color(color.new(color.gray, 70), "Kolor świec (Neutralne)", group=groupCOL)
+    except Exception as e:
+        send_to_discord(f"❗ calculate_qty error: {e}")
+        return None, None
 
-inLong  = strategy.position_size > 0
-inShort = strategy.position_size < 0
+# ====================== FLASK ROUTES ======================
+@app.get("/")
+def index():
+    return "✅ Bot działa!", 200
 
-barcolor(
-     inLong  ? longColor :
-     inShort ? shortColor :
-     neutralColor)
+@app.post("/webhook")
+def webhook():
+    global processing
+    if processing:
+        return "Processing in progress", 429
+    processing = True
+    try:
+        data = parse_incoming_json()
+        if not isinstance(data, dict):
+            processing = False
+            return ("", 204)
 
-// ===================================================================
-//  LINIA SUPERTREND
-// ===================================================================
-plot(supertrend, color=upTrend ? color.new(color.lime, 0) : color.new(color.red, 0), linewidth=2, title="Supertrend")
+        action = str(data.get("action","")).lower()
+        symbol = normalize_symbol(data.get("symbol", SYMBOL))
+        if symbol not in ALLOWED_SET:
+            send_to_discord(f"🚫 Niedozwolony symbol: {symbol}")
+            processing = False
+            return jsonify(error="symbol not allowed"), 400
 
-// === BOX 1% PROWIZJI ===
-var box provBox = na
-provPerc = 1.0
+        sl = float(data.get("sl") or 0) or None
+        tp = float(data.get("tp") or 0) or None
 
-if longSignal
-    entryPrice = close
-    provBox := box.new(left=bar_index, right=bar_index+1, top=entryPrice*(1+provPerc/100), bottom=entryPrice, bgcolor=color.new(color.lime, 80), border_color=na)
-if shortSignal
-    entryPrice = close
-    provBox := box.new(left=bar_index, right=bar_index+1, top=entryPrice, bottom=entryPrice*(1-provPerc/100), bgcolor=color.new(color.red, 80), border_color=na)
-if not na(provBox)
-    box.set_right(provBox, bar_index + 1)
+        # ZAWSZE TRYB PROCENTOWY Z CONFIGU
+        percent = POSITION_VALUE
 
-// === TRWAŁA LINIA TP ===
-var line[]  tpLines  = array.new_line()
-var label[] tpLabels = array.new_label()
+        size, side, entry = get_current_position(symbol)
 
-tpLineWidth = 1
-tpLineStyleFinal = line.style_dotted
+        # ===== CLOSE =====
+        if action == "close":
+            if size <= 0:
+                processing = False
+                return ("", 204)
+            last = get_last_price(symbol)
+            notional = size * last
+            pnl_pct = 0.0
+            if entry > 0:
+                pnl_pct = ((last - entry)/entry*100) if side == "Buy" else ((entry - last)/entry*100)
+            close_side = "Sell" if side == "Buy" else "Buy"
+            try:
+                session.place_order(
+                    category="linear",
+                    symbol=symbol,
+                    side=close_side,
+                    orderType="Market",
+                    qty=size,
+                    reduceOnly=True,
+                    timeInForce="GoodTillCancel"
+                )
+            except Exception as e:
+                send_to_discord(f"❗ CLOSE error: {e}")
+            sign = "🟢" if pnl_pct > 0 else "🔴" if pnl_pct < 0 else "⚪"
+            send_to_discord(
+                f"🧯 CLOSE: {side.upper()} {size} {symbol} ≈ {notional:.2f} USDT ({sign}{pnl_pct:.2f}%)"
+            )
+            processing = False
+            return jsonify(ok=True), 200
 
-newLong   = strategy.position_size > 0 and strategy.position_size[1] <= 0
-newShort  = strategy.position_size < 0 and strategy.position_size[1] >= 0
-closedPos = strategy.position_size == 0 and strategy.position_size[1] != 0
+        # ===== BUY / SELL =====
+        if action in ("buy","sell"):
+            # zamknij odwrotną
+            if size > 0:
+                close_side = "Sell" if side == "Buy" else "Buy"
+                try:
+                    session.place_order(
+                        category="linear",
+                        symbol=symbol,
+                        side=close_side,
+                        orderType="Market",
+                        qty=size,
+                        reduceOnly=True,
+                        timeInForce="GoodTillCancel"
+                    )
+                    send_to_discord(f"🔒 Zamknięto {side.upper()} {size} {symbol}")
+                    time.sleep(1.0)
+                except Exception as e:
+                    send_to_discord(f"❗ Close-prev error: {e}")
 
-if tpEnabled
-    if newLong
-        tpPrice = strategy.position_avg_price * (1 + tpPercent / 100)
-        tpLineColor = tpColorLong
-        l   = line.new(bar_index, tpPrice, bar_index, tpPrice, color=tpLineColor, width=tpLineWidth, style=tpLineStyleFinal)
-        lbl = label.new(bar_index, tpPrice, "🎯 TP " + str.tostring(tpPercent, "0.0") + "%", style=label.style_label_left, textcolor=tpLineColor, color=color.new(color.black, 80))
-        array.push(tpLines, l), array.push(tpLabels, lbl)
+            # wylicz ilość (TYLKO PROCENT)
+            qty, notional = calculate_qty(symbol, percent)
+            if not qty:
+                processing = False
+                return "Invalid qty", 400
 
-    if newShort
-        tpPrice = strategy.position_avg_price * (1 - tpPercent / 100)
-        tpLineColor = tpColorShort
-        l   = line.new(bar_index, tpPrice, bar_index, tpPrice, color=tpLineColor, width=tpLineWidth, style=tpLineStyleFinal)
-        lbl = label.new(bar_index, tpPrice, "🎯 TP " + str.tostring(tpPercent, "0.0") + "%", style=label.style_label_left, textcolor=tpLineColor, color=color.new(color.black, 80))
-        array.push(tpLines, l), array.push(tpLabels, lbl)
+            new_side = "Buy" if action == "buy" else "Sell"
 
-    if strategy.position_size != 0 and array.size(tpLines) > 0
-        lastLine  = array.get(tpLines,  array.size(tpLines)  - 1)
-        lastLabel = array.get(tpLabels, array.size(tpLabels) - 1)
-        line.set_xy2(lastLine, bar_index, line.get_y1(lastLine))
-        label.set_x(lastLabel, bar_index + 1)
-        label.set_y(lastLabel, line.get_y1(lastLine))
-        label.set_text(lastLabel, "🎯 TP " + str.tostring(tpPercent, "0.0") + "%")
+            # pre-check instrumentu (whitelist / status)
+            inst = get_instrument(symbol)
+            if not inst:
+                processing = False
+                return jsonify(error="symbol not tradable"), 400
 
-    if closedPos and array.size(tpLines) > 0
-        lastLine  = array.get(tpLines,  array.size(tpLines)  - 1)
-        lastLabel = array.get(tpLabels, array.size(tpLabels) - 1)
-        yPos = line.get_y1(lastLine)
-        line.set_xy2(lastLine, bar_index, yPos)
-        label.set_x(lastLabel, bar_index)
-        label.set_y(lastLabel, yPos)
+            try:
+                session.place_order(
+                    category="linear",
+                    symbol=symbol,
+                    side=new_side,
+                    orderType="Market",
+                    qty=qty,
+                    timeInForce="GoodTillCancel"
+                )
+            except Exception as e:
+                send_to_discord(f"❗ place_order error: {e}")
+                processing = False
+                return "Order error", 400
 
-// === WSKAŹNIK ZYSKU/STRATY ===
-groupProfit = "Wskaźnik zysku/straty"
-showProfitTable = input.bool(true, "Pokaż bieżący zysk/stratę (prawy górny róg)", group=groupProfit)
-var table profitTable = na
-if showProfitTable and na(profitTable)
-    profitTable := table.new(position.top_right, 1, 1, border_width=1, border_color=color.new(color.gray, 80))
+            msg = f"📥 Otwarto {new_side.upper()} ({qty} {symbol}) ≈ {notional:.2f} USDT (PERCENT {percent})"
+            send_to_discord(msg)
 
-if showProfitTable and barstate.isrealtime
-    if strategy.position_size != 0
-        entryPriceRT   = strategy.position_avg_price
-        profitPercentT = strategy.position_size > 0 ? ((close - entryPriceRT) / entryPriceRT) * 100 : ((entryPriceRT - close) / entryPriceRT) * 100
-        profitColor    = profitPercentT >= 0 ? color.new(color.lime, 0) : color.new(color.red, 0)
-        table.cell(profitTable, 0, 0, "💰 Zysk: " + str.tostring(profitPercentT, "0.00") + "%", text_color=profitColor, text_size=size.large, bgcolor=color.new(color.black, 75))
-    else
-        table.cell(profitTable, 0, 0, "⚫ Brak pozycji", text_color=color.new(color.gray, 70), text_size=size.large, bgcolor=color.new(color.black, 85))
+            # ustaw TP/SL jeśli są
+            set_tp_sl_safe(symbol, sl, tp)
+
+            processing = False
+            return jsonify(ok=True), 200
+
+        processing = False
+        return jsonify(ok=True), 200
+
+    except Exception as e:
+        send_to_discord(f"❗ System error: {e}")
+        processing = False
+        return "Webhook error", 500
+
+if __name__ == "__main__":
+    print("🚀 Bot uruchomiony…")
+    print(f"✅ Dozwolone pary: {', '.join(sorted(ALLOWED_SET))}")
+    print(f"📈 Tryb: PERCENT, wartość: {POSITION_VALUE}")
+    app.run(host="0.0.0.0", port=PORT)
