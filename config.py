@@ -1,8 +1,8 @@
 # ======================
 # 🔑 USTAWIENIA API BYBIT
 # ======================
-API_KEY = "fMqmICCnGQtafLBuKf"
-API_SECRET = "ySpYC00YLtn3dLQENrkBM0txN2xlvGK9aLlB"
+API_KEY = "SzDheJ2TdlMX7zsP8t"
+API_SECRET = "rVw2xMDajvv56viSSwF4pcmIkZW6xEmcO3mL"
 
 # ======================
 # ⚙️ PARAMETRY BOTA
